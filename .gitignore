@@ -1,0 +1,114 @@
+# Rust build artifacts
+/target/
+**/*.rs.bk
+Cargo.lock
+.venv
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon
+._*
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Linux
+*~
+
+# Logs
+*.log
+logs/
+
+# Python cache (for training scripts)
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# Training artifacts and large model files
+models/foundation/          # 8.7GB - too large for git
+models/quantized/          # 2.1GB - training artifacts only
+*.ckpt
+*.pth
+*.pt
+checkpoints/
+wandb/
+tensorboard_logs/
+
+# Dataset downloads
+data/
+datasets/
+*.zip
+*.tar.gz
+*.tar.bz2
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+*.temp
+
+# Model training outputs (except nano models)
+experiments/
+results/
+outputs/
+
+# Cache directories
+.cache/
+*.cache
+
+# Hugging Face cache
+.cache/huggingface/
+
+# Local development
+local/
+scratch/
+
+# Documentation build
+docs/_build/
+
+# Keep nano models (these ship with library)
+!models/nano/
+!models/nano/**/*
+
+# Keep essential scripts
+!scripts/create_nano_models.py
+!scripts/train_ocr_nano.py
+!scripts/download_ocr_datasets.py
+# Temporarily ignore nano models during transition
+models/nano/*.safetensors
+models/nano/*_tokenizer/
