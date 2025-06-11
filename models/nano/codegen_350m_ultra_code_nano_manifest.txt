@@ -1,0 +1,11 @@
+# Manifest for codegen_350m_ultra_code_nano
+archive_name=codegen_350m_ultra_code_nano.7z
+chunk_size=25M
+part_count=       3
+original_size= 56M
+created=Wed Jun 11 16:57:59 PDT 2025
+
+# Parts:
+codegen_350m_ultra_code_nano_part_000
+codegen_350m_ultra_code_nano_part_001
+codegen_350m_ultra_code_nano_part_002

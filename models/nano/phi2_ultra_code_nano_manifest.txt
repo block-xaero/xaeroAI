@@ -1,0 +1,11 @@
+# Manifest for phi2_ultra_code_nano
+archive_name=phi2_ultra_code_nano.7z
+chunk_size=25M
+part_count=       3
+original_size= 58M
+created=Wed Jun 11 16:58:03 PDT 2025
+
+# Parts:
+phi2_ultra_code_nano_part_000
+phi2_ultra_code_nano_part_001
+phi2_ultra_code_nano_part_002

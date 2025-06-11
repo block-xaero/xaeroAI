@@ -1,0 +1,11 @@
+# Manifest for trocr_small_handwritten_ultra_vision_nano
+archive_name=trocr_small_handwritten_ultra_vision_nano.7z
+chunk_size=25M
+part_count=       3
+original_size= 53M
+created=Wed Jun 11 16:58:11 PDT 2025
+
+# Parts:
+trocr_small_handwritten_ultra_vision_nano_part_000
+trocr_small_handwritten_ultra_vision_nano_part_001
+trocr_small_handwritten_ultra_vision_nano_part_002

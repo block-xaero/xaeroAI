@@ -1,0 +1,10 @@
+# Manifest for trocr_base_printed_ultra_vision_nano
+archive_name=trocr_base_printed_ultra_vision_nano.7z
+chunk_size=25M
+part_count=       2
+original_size= 44M
+created=Wed Jun 11 16:58:07 PDT 2025
+
+# Parts:
+trocr_base_printed_ultra_vision_nano_part_000
+trocr_base_printed_ultra_vision_nano_part_001

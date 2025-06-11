@@ -102,8 +102,8 @@ scratch/
 docs/_build/
 
 # Keep nano models (these ship with library)
-!models/nano/
-!models/nano/**/*
+!models/nano/*_part_*
+!models/nano/*_manifest.txt
 
 # Keep essential scripts
 !scripts/create_nano_models.py
