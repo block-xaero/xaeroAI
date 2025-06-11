@@ -1,0 +1,18 @@
+{
+  "teacher_model": "models/quantized/phi2_q4.safetensors",
+  "teacher_size_mb": 1593.3647346496582,
+  "nano_size_mb": 62.884132385253906,
+  "compression_ratio": 25.338104768434338,
+  "teacher_params": 2779683840,
+  "student_params": 23420928,
+  "param_reduction": 118.68376180482686,
+  "nano_config": {
+    "hidden_size": 256,
+    "num_hidden_layers": 6,
+    "num_attention_heads": 4,
+    "intermediate_size": 1024,
+    "target_size_mb": 20,
+    "specialization": "code_generation"
+  },
+  "distillation_method": "knowledge_distillation"
+}

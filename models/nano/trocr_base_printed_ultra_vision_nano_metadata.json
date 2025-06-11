@@ -1,0 +1,18 @@
+{
+  "teacher_model": "models/quantized/trocr_base_printed_q4.safetensors",
+  "teacher_size_mb": 269.32959365844727,
+  "nano_size_mb": 47.26206970214844,
+  "compression_ratio": 5.698641539733587,
+  "teacher_params": 385393152,
+  "student_params": 18133696,
+  "param_reduction": 21.25287376605409,
+  "nano_config": {
+    "hidden_size": 192,
+    "num_hidden_layers": 4,
+    "num_attention_heads": 3,
+    "intermediate_size": 768,
+    "target_size_mb": 15,
+    "specialization": "vision_processing"
+  },
+  "distillation_method": "knowledge_distillation"
+}
