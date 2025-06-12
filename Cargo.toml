@@ -1,0 +1,147 @@
+# Cargo.toml
+[package]
+name = "xaeroai"
+version = "0.0.1"
+edition = "2024"
+authors = ["Anirudh Vyas <ricky.nj@gmail.com>"]
+description = "Generalized framework for building distributed AI agent P2P meshes"
+license = "MIT OR Apache-2.0 or MPL-2.0"
+repository = "https://github.com/block-xaero/xaeroai"
+keywords = ["ai", "p2p", "agents", "distributed", "mesh"]
+categories = ["science", "network-programming"]
+
+[lib]
+name = "xaeroai"
+crate-type = ["cdylib", "rlib"]  # Support both library and FFI usage
+
+# Binaries for tooling
+[[bin]]
+name = "quantize"
+path = "src/bin/quantize.rs"
+
+# Include models in the published crate
+include = [
+    "src/**/*",
+    "models/nano/**/*",
+    "Cargo.toml",
+    "README.md"
+]
+
+[[bin]]
+name = "agent-mesh"
+path = "src/bin/agent_mesh.rs"
+
+[[bin]]
+name = "model-converter"
+path = "src/bin/model_converter.rs"
+
+[dependencies]
+# ===== Xaeroflux dependencies ======
+xaeroflux = "0.3.0-m3"
+xaeroid = "0.2.0-rc1"
+
+# ===== CORE AI/ML =====
+candle-core = { version = "0.3", default-features = false }
+candle-nn = "0.3"
+candle-transformers = "0.3"
+safetensors = "0.4"
+hf-hub = "0.3"
+tokenizers = "0.15"
+
+# ===== P2P MESH NETWORKING (No Tokio) =====
+# We'll use blocking I/O and thread pools instead
+crossbeam = "0.8"           # Lock-free data structures
+crossbeam-channel = "0.5"   # Multi-producer, multi-consumer channels
+rayon = "1.7"               # Data parallelism
+parking_lot = "0.12"        # Faster mutexes than std
+
+# ===== SERIALIZATION & DATA =====
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+bincode = "1.3"             # Binary serialization for P2P
+rmp-serde = "1.1"           # MessagePack for compact serialization
+
+# ===== NETWORKING (Blocking) =====
+mio = { version = "0.8", features = ["os-poll", "net"] }  # Non-blocking I/O without tokio
+socket2 = "0.5"             # Low-level socket operations
+dns-lookup = "2.0"          # DNS resolution
+
+# ===== CRYPTO & IDENTITY =====
+ed25519-dalek = "2.0"       # For XaeroID signatures
+sha2 = "0.10"               # Hashing
+blake3 = "1.5"              # Fast hashing
+rand = "0.8"                # Random number generation
+
+# ===== UTILITIES =====
+anyhow = "1.0"              # Error handling
+thiserror = "1.0"           # Custom error types
+clap = { version = "4.0", features = ["derive"] }  # CLI
+log = "0.4"                 # Logging (no async)
+env_logger = "0.10"         # Simple logger
+indicatif = "0.17"          # Progress bars
+uuid = { version = "1.0", features = ["v4", "serde"] }
+
+# ===== IMAGE PROCESSING =====
+image = { version = "0.24", default-features = false, features = ["png", "jpeg"] }
+
+# ===== STORAGE =====
+sled = "0.34"               # Embedded database (no async)
+lmdb = "0.8"                # For XaeroFlux compatibility
+
+# ===== FFI SUPPORT =====
+libc = "0.2"
+
+
+[dev-dependencies]
+tempfile = "3.0"
+criterion = "0.5"           # Benchmarking
+
+# Feature flags for different capabilities
+[features]
+default = ["agents", "p2p", "ai"]
+
+# Core features
+agents = []                 # Agent framework
+p2p = []                   # P2P networking
+ai = []                    # AI model support
+
+# Platform features  
+cuda = ["candle-core/cuda"]
+metal = ["candle-core/metal"]
+mkl = ["candle-core/mkl"]
+
+# Networking features
+mesh-networking = ["p2p"]
+agent-discovery = ["p2p"]
+
+# AI features
+nano-models = ["ai"]
+lora-training = ["ai"]
+model-quantization = ["ai"]
+
+# Integration features
+xaeroflux-integration = []
+xaeroid-integration = []
+cyan-app-support = []
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"             # Smaller binaries
+
+[profile.dev]
+opt-level = 1               # Faster debug builds
+
+# Benchmarks
+#[[bench]]
+#name = "agent_performance"
+#harness = false
+#
+#[[bench]]
+#name = "p2p_networking"
+#harness = false
+#
+#[[bench]]
+#name = "model_inference"
+#harness = false
