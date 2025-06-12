@@ -3,6 +3,7 @@
 **/*.rs.bk
 Cargo.lock
 .venv
+
 # IDE files
 .vscode/
 .idea/
@@ -82,7 +83,7 @@ temp/
 *.tmp
 *.temp
 
-# Model training outputs (except nano models)
+# Model training outputs (except nano model parts)
 experiments/
 results/
 outputs/
@@ -101,7 +102,15 @@ scratch/
 # Documentation build
 docs/_build/
 
-# Keep nano models (these ship with library)
+# Nano models - ignore everything except parts and manifests
+models/nano/*.safetensors
+models/nano/*_tokenizer/
+models/nano/*_config.json
+models/nano/*_metadata.json
+models/nano/*.7z
+models/nano_backup_*/
+
+# Keep only nano model parts and manifests
 !models/nano/*_part_*
 !models/nano/*_manifest.txt
 
@@ -109,6 +118,3 @@ docs/_build/
 !scripts/create_nano_models.py
 !scripts/train_ocr_nano.py
 !scripts/download_ocr_datasets.py
-# Temporarily ignore nano models during transition
-models/nano/*.safetensors
-models/nano/*_tokenizer/
