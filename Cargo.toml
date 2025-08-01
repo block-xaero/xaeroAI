@@ -36,9 +36,11 @@ name = "model-converter"
 path = "src/bin/model_converter.rs"
 
 [dependencies]
+#====== Rusted Ring ================#
+rusted-ring = "0.3.3"
 # ===== Xaeroflux dependencies ======
-xaeroflux = "0.3.0-m3"
-xaeroid = "0.2.0-rc1"
+xaeroflux = "0.8.0-m5"
+xaeroid = "0.3.1-rc3"
 
 # ===== CORE AI/ML =====
 candle-core = { version = "0.3", default-features = false }

@@ -6,7 +6,6 @@
 //! - Nano model inference and training
 //! - Integration points for XaeroFlux and XaeroID
 
-use xaeroflux::actors::XaeroEvent;
 use xaeroflux::actors::subject::Subject;
 use xaeroid::XaeroID;
 
@@ -19,10 +18,6 @@ pub struct XaeroAISubject {
     pub ai_subject: Subject,
 }
 
-pub struct XaeroAIEvent {
-    pub id: XaeroID,
-    pub underlying: XaeroEvent,
-}
 
 // ============================================================================
 // Core AI Events
