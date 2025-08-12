@@ -1,5 +1,11 @@
+mod storage;
+mod yolo;
+
+use bytemuck::{Pod, Zeroable};
 use candle_core::quantized::QuantizedType;
 use candle_core::{Shape, shape};
+use rkyv::Archive;
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use xaeroid::XaeroID;
 
@@ -59,6 +65,9 @@ pub struct LoRATrainingMeta {
     pub dataset_hash: [u8; 32],
     pub training_time_ms: u64,
 }
+
+#[repr(C, align(64))]
+#[derive(Debug, Copy, Clone)]
 pub struct LoRAMetrics {
     // Performance metrics
     pub task_accuracy: f64,       // How well it performs on validation set
@@ -85,8 +94,12 @@ pub struct LoRAMetrics {
     pub overfitting_indicator: f64, // validation_loss - training_loss
 }
 
+unsafe impl Pod for LoRAMetrics {}
+unsafe impl Zeroable for LoRAMetrics {}
+
+#[repr(C, align(64))]
+#[derive(Archive, Serialize, Deserialize, Debug, Clone)]
 pub enum LoRAEvent {
-    // Discovery & Loading
     LoRAAdapterDiscovered {
         adapter_id: XaeroID,
         base_model_hash: [u8; 32],
@@ -123,6 +136,8 @@ pub enum LoRAEvent {
     },
 }
 
+#[repr(C, align(64))]
+#[derive(Archive, Serialize, Deserialize, Debug, Clone)]
 pub struct LoRAHyperparams {
     pub rank: usize,
     pub alpha: f64,
