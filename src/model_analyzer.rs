@@ -1,3 +1,4 @@
+use candle_core::{Device, Tensor};
 use image::{DynamicImage, ImageBuffer, ImageReader, Rgb, Rgba};
 use std::io::Cursor;
 use xaeroid::XaeroID;
@@ -45,9 +46,47 @@ pub fn vectorize(buffer: ImageBuffer<Rgb<u8>, Vec<u8>>) -> Vec<f32> {
             ]
         })
         .collect();
-
     tracing::info!("Normalized {} pixel values", pixels.len()); // Should be 640*640*3 = 1,228,800
     pixels
+}
+
+pub fn hwc_to_chw(pixels: Vec<f32>) -> Vec<f32> {
+    // Current format: Height-Width-Channels (HWC)
+    // [R,G,B, R,G,B, R,G,B, ...] for each row
+    //
+    // YOLO for example wants: Channels-Height-Width (CHW)
+    // [all R values, all G values, all B values]
+
+    let mut chw_data = vec![0.0f32; 3 * 640 * 640];
+    for h in 0..640 {
+        // For each row
+        for w in 0..640 {
+            // For each column
+            let hwc_index = (h * 640 + w) * 3; // Where this pixel is in HWC format
+
+            // Red channel: put all reds together
+            chw_data[0 * 640 * 640 + h * 640 + w] = pixels[hwc_index + 0];
+            // Green channel: put all greens together
+            chw_data[1 * 640 * 640 + h * 640 + w] = pixels[hwc_index + 1];
+            // Blue channel: put all blues together
+            chw_data[2 * 640 * 640 + h * 640 + w] = pixels[hwc_index + 2];
+        }
+    }
+    chw_data
+}
+
+pub fn create_tensor(chw_data: Vec<f32>) -> Tensor {
+    let input_tensor = Tensor::from_vec(
+        chw_data,         // The normalized, reordered pixel data
+        (1, 3, 640, 640), // Shape: [batch_size, channels, height, width]
+        &Device::Cpu,     // Run on CPU (could be GPU)
+    );
+    match input_tensor {
+        Ok(tensor) => tensor,
+        Err(e) => {
+            panic!("failed due to {e:?}");
+        }
+    }
 }
 #[cfg(test)]
 mod tests {
