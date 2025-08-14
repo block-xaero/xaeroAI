@@ -36,6 +36,8 @@ name = "model-converter"
 path = "src/bin/model_converter.rs"
 
 [dependencies]
+tch = "0.20.0"
+tracing = "0.1.41"
 #====== Rusted Ring ================#
 rusted-ring = "0.5.6"
 # ===== Xaeroflux dependencies ======
@@ -44,7 +46,10 @@ xaeroid = "0.4.1"
 
 # ===== CORE AI/ML =====
 candle-core = { version = "0.9.1"}
+candle-nn = "0.9.1"
 
+# ==== Preprocessing ===
+image = "0.25.6"
 
 # ===== SERIALIZATION & DATA =====
 serde = { version = "1.0", features = ["derive"] }

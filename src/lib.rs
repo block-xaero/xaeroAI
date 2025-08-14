@@ -1,5 +1,5 @@
 mod storage;
-mod yolo;
+mod model_analyzer;
 
 use bytemuck::{Pod, Zeroable};
 use candle_core::quantized::QuantizedType;
@@ -33,7 +33,24 @@ pub struct XaeroAIModelLayer {
     pub layer_type: XaeroLayerType,
     pub lora_target: bool,
     pub shape: shape::Shape,
+    pub weights: Vec<u8>, // Raw quantized bytes
+    pub quantization_info: QuantizationInfo,
 }
+#[repr(C, align(64))]
+pub struct QuantizationInfo {
+    pub dtype: QuantizedDType,
+    pub scale: f32,
+    pub zero_point: i32,
+}
+
+#[derive(Debug, Clone)]
+pub enum QuantizedDType {
+    Q4_0, // 4-bit
+    Q8_0, // 8-bit
+    F16,  // Half precision
+    F32,  // Full precision
+}
+
 pub struct XaeroModelArchitecture {
     pub backbone_layers: Vec<XaeroAIModelLayer>,
     pub neck_layers: Vec<XaeroAIModelLayer>,

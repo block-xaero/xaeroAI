@@ -1,7 +1,8 @@
 use crate::LoRAEvent;
 use rusted_ring::PooledEvent;
 use std::sync::OnceLock;
-use xaeroflux::actors::XaeroFlux;
+use xaeroflux::actors::{XaeroFlux, XaeroFluxError};
+use xaeroflux::event::EventType;
 use xaeroid::XaeroID;
 /*
  LoRAAdapterDiscovered {
@@ -51,7 +52,21 @@ pub fn get_xaeroflux_handle(xid: XaeroID) -> &'static XaeroFlux {
     });
     xf
 }
-pub fn push_lora_event(xid: XaeroID,lora_event: LoRAEvent) {
-
-    get_xaeroflux_handle(xid).event_bus.write_optimal()
+pub fn push_lora_event(xid: XaeroID, lora_event: LoRAEvent) {
+    let bytes_rs = rkyv::to_bytes(&lora_event);
+    match bytes_rs {
+        Ok(bytes) => {
+            match get_xaeroflux_handle(xid).write_event(
+                bytes.as_slice(),
+                EventType::ApplicationEvent(100).to_u8() as u32,
+            ) {
+                Ok(_) => {
+                    tracing::info!("event pushed");
+                }
+                Err(e) => {
+                    tracing::error!("event push failed: {e:?}");
+                }
+            }
+        }
+    }
 }
