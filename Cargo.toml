@@ -14,10 +14,6 @@ categories = ["science", "network-programming"]
 name = "xaeroai"
 crate-type = ["cdylib", "rlib"]  # Support both library and FFI usage
 
-# Binaries for tooling
-[[bin]]
-name = "quantize"
-path = "src/bin/quantize.rs"
 
 # Include models in the published crate
 include = [
@@ -27,16 +23,8 @@ include = [
     "README.md"
 ]
 
-[[bin]]
-name = "agent-mesh"
-path = "src/bin/agent_mesh.rs"
-
-[[bin]]
-name = "model-converter"
-path = "src/bin/model_converter.rs"
 
 [dependencies]
-tch = "0.20.0"
 tracing = "0.1.41"
 #====== Rusted Ring ================#
 rusted-ring = "0.5.6"
@@ -45,8 +33,9 @@ xaeroflux = "0.9.0-alpha"
 xaeroid = "0.4.1"
 
 # ===== CORE AI/ML =====
-candle-core = { version = "0.9.1"}
+candle-core = { version = "0.9.1" }
 candle-nn = "0.9.1"
+safetensors = "0.6.2"
 
 # ==== Preprocessing ===
 image = "0.25.6"
@@ -57,24 +46,6 @@ rkyv = "0.8.11"
 bytemuck = "1.23.2"
 
 
-# Feature flags for different capabilities
-[features]
-default = ["agents", "p2p", "ai"]
-
-# Core features
-agents = []                 # Agent framework
-p2p = []                   # P2P networking
-ai = []                    # AI model support
-
-# Platform features  
-cuda = ["candle-core/cuda"]
-metal = ["candle-core/metal"]
-mkl = ["candle-core/mkl"]
-
-# AI features
-nano-models = ["ai"]
-lora-training = ["ai"]
-model-quantization = ["ai"]
 
 [profile.release]
 opt-level = 3

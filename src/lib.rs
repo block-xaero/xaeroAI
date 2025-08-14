@@ -1,5 +1,5 @@
-mod storage;
 mod model_analyzer;
+mod storage;
 
 use bytemuck::{Pod, Zeroable};
 use candle_core::quantized::QuantizedType;
@@ -10,16 +10,16 @@ use std::collections::BTreeMap;
 use xaeroid::XaeroID;
 
 pub struct XaeroAIModelRegistry {
-    pub xaero_id: XaeroID,
+    pub xaero_id: [u8; 32],
     pub models: Vec<XaeroAIModel>,
 }
 
 pub struct XaeroAIModel {
-    pub xaero_id: XaeroID,
+    pub xaero_id: [u8; 32],
     pub model_hash: [u8; 32],
     pub arch: XaeroModelArchitecture,
     pub quantization: Box<dyn QuantizedType>, // INT8, INT4, F16, etc.
-    pub lora_adapters: BTreeMap<XaeroID, XaeroID>, // user_id -> lora_delta_hash
+    pub lora_adapters: BTreeMap<[u8; 32], [u8; 32]>, // user_id -> lora_delta_hash
     pub base_size_bytes: u64,                 // For P2P transfer planning
 }
 
@@ -58,7 +58,7 @@ pub struct XaeroModelArchitecture {
 }
 
 pub struct XaeroLoRALayerWeights {
-    pub layer_id: XaeroID,
+    pub layer_id: [u8; 32],
     pub original_shape: Shape, // [out_dim, in_dim] for the original layer
     pub lora_a: Vec<f32>,      // Flattened A matrix [in_dim, rank]
     pub lora_b: Vec<f32>,      // Flattened B matrix [rank, out_dim]
@@ -66,9 +66,9 @@ pub struct XaeroLoRALayerWeights {
 }
 
 pub struct XaeroLoRAAdapter {
-    pub adapter_id: XaeroID,
+    pub adapter_id: [u8; 32],
     pub base_model_hash: [u8; 32],
-    pub user_id: XaeroID,
+    pub user_id: [u8; 32],
     pub domain: String, // "whiteboard", "medical", "automotive"
     pub rank: usize,
     pub alpha: f64,
@@ -85,6 +85,7 @@ pub struct LoRATrainingMeta {
 
 #[repr(C, align(64))]
 #[derive(Debug, Copy, Clone)]
+#[derive(Archive, Serialize, Deserialize)]
 pub struct LoRAMetrics {
     // Performance metrics
     pub task_accuracy: f64,       // How well it performs on validation set
@@ -116,41 +117,47 @@ unsafe impl Zeroable for LoRAMetrics {}
 
 #[repr(C, align(64))]
 #[derive(Archive, Serialize, Deserialize, Debug, Clone)]
-pub enum LoRAEvent {
-    LoRAAdapterDiscovered {
-        adapter_id: XaeroID,
-        base_model_hash: [u8; 32],
-        domain: String,
-        performance_metrics: Option<LoRAMetrics>,
-    },
+pub struct LoRAAdapterDiscovered {
+    adapter_id: [u8; 32],
+    base_model_hash: [u8; 32],
+    domain: String,
+    performance_metrics: Option<LoRAMetrics>,
+}
 
-    // Training Lifecycle
-    LoRATrainingRequested {
-        base_model_id: XaeroID,
-        user_id: XaeroID,
-        target_layers: Vec<XaeroID>,
-        hyperparams: LoRAHyperparams,
-        dataset_id: XaeroID,
-    },
+// Training Lifecycle
+#[repr(C, align(64))]
+#[derive(Archive, Serialize, Deserialize, Debug, Clone)]
+pub struct LoRATrainingRequested {
+    base_model_id: [u8; 32],
+    user_id: [u8; 32],
+    target_layers: Vec<[u8; 32]>,
+    hyperparams: LoRAHyperparams,
+    dataset_id: [u8; 32],
+}
 
-    LoRAEpochCompleted {
-        adapter_id: XaeroID,
-        epoch: u32,
-        loss: f64,
-        layer_updates: BTreeMap<XaeroID, (Vec<f32>, Vec<f32>)>, // Updated A, B
-    },
+#[repr(C, align(64))]
+#[derive(Archive, Serialize, Deserialize, Debug, Clone)]
+pub struct LoRAEpochCompleted {
+    adapter_id: [u8; 32],
+    epoch: u32,
+    loss: f64,
+    layer_updates: BTreeMap<[u8; 32], (Vec<f32>, Vec<f32>)>, // Updated A, B
+}
 
-    // Composition & Inference
-    LoRACompositionRequested {
-        base_model_id: XaeroID,
-        adapter_ids: Vec<XaeroID>, // Can stack multiple LoRAs
-        inference_context: String,
-    },
+// Composition & Inference
+#[repr(C, align(64))]
+#[derive(Archive, Serialize, Deserialize, Debug, Clone)]
+pub struct LoRACompositionRequested {
+    base_model_id: [u8; 32],
+    adapter_ids: Vec<[u8; 32]>, // Can stack multiple LoRAs
+    inference_context: String,
+}
 
-    LoRAWeightsComposed {
-        composition_id: XaeroID,
-        layer_deltas: BTreeMap<XaeroID, Vec<f32>>, // Final composed weight deltas
-    },
+#[repr(C, align(64))]
+#[derive(Archive, Serialize, Deserialize, Debug, Clone)]
+pub struct LoRAWeightsComposed {
+    composition_id: [u8; 32],
+    layer_deltas: BTreeMap<[u8; 32], Vec<f32>>, // Final composed weight deltas
 }
 
 #[repr(C, align(64))]
