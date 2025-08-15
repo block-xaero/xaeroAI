@@ -1,46 +1,15 @@
-use crate::LoRATrainingRequested;
-use rusted_ring::PooledEvent;
-use std::sync::OnceLock;
+use crate::{ArchivedXaeroLoRAAdapter, XaeroLoRAAdapter};
+use lmdb::{Database, DatabaseFlags, Environment, Transaction, WriteFlags};
 use rkyv::rancor::Failure;
-use xaeroflux::actors::{XaeroFlux, XaeroFluxError};
-use xaeroflux::event::EventType;
+use rkyv::{Archive, Deserialize, Serialize, from_bytes, rancor::Error, to_bytes};
+use std::ffi::CString;
+use std::path::Path;
+use std::ptr;
+use std::sync::{Arc, Mutex, OnceLock};
+use xaeroflux::actors::XaeroFlux;
+use xaeroflux::actors::aof::storage::lmdb::{LmdbEnv, open_named_db};
+use xaeroflux::hash::blake_hash_slice;
 use xaeroid::XaeroID;
-/*
- LoRAAdapterDiscovered {
-       adapter_id: XaeroID,
-       base_model_hash: [u8; 32],
-       domain: String,
-       performance_metrics: Option<LoRAMetrics>,
-   },
-
-   // Training Lifecycle
-   LoRATrainingRequested {
-       base_model_id: XaeroID,
-       user_id: XaeroID,
-       target_layers: Vec<XaeroID>,
-       hyperparams: LoRAHyperparams,
-       dataset_id: XaeroID,
-   },
-
-   LoRAEpochCompleted {
-       adapter_id: XaeroID,
-       epoch: u32,
-       loss: f64,
-       layer_updates: BTreeMap<XaeroID, (Vec<f32>, Vec<f32>)>, // Updated A, B
-   },
-
-   // Composition & Inference
-   LoRACompositionRequested {
-       base_model_id: XaeroID,
-       adapter_ids: Vec<XaeroID>, // Can stack multiple LoRAs
-       inference_context: String,
-   },
-
-   LoRAWeightsComposed {
-       composition_id: XaeroID,
-       layer_deltas: BTreeMap<XaeroID, Vec<f32>>, // Final composed weight deltas
-   },
-*/
 
 static HANDLE: OnceLock<XaeroFlux> = OnceLock::new();
 
@@ -53,3 +22,63 @@ pub fn get_xaeroflux_handle(xid: XaeroID) -> &'static XaeroFlux {
     });
     xf
 }
+
+pub struct LmdbStore {
+    pub env: Environment,
+    pub lora_adapter_db: Database,
+}
+impl LmdbStore {
+    pub fn create_env(&mut self) {
+        unsafe {
+            let res = lmdb::Environment::new().open(Path::new("xaeroai_store"));
+            match res {
+                Ok(env) => self.env = env,
+                Err(e) => panic!("Error creating xaeroai_store environment: {e:?}"),
+            }
+        }
+    }
+
+    pub fn create_lora_adapter_db(&mut self) {
+        unsafe {
+            let rw = self.env.begin_rw_txn()?;
+            let db = rw.create_db(Some("lora_adapter_db"), DatabaseFlags::default())?;
+            tracing::debug!("db created: {db:?}");
+            rw.commit()?;
+            self.lora_adapter_db = db;
+        }
+    }
+    pub fn push_lora_adapter(
+        &mut self,
+        adapter: &XaeroLoRAAdapter,
+    ) -> Result<[u8; 32], Box<dyn std::error::Error>> {
+        unsafe {
+            let bytes = rkyv::to_bytes(adapter)?.as_slice();
+            let hash = blake_hash_slice(bytes);
+            tracing::debug!("hashed to {hash:?}");
+            let mut tx = self.env.begin_rw_txn()?;
+            tx.put::<[u8; 32], [u8]>(self.lora_adapter_db, &hash, bytes, WriteFlags::NO_DUP_DATA)?;
+            tx.commit()?;
+            Ok(hash)
+        }
+    }
+
+    pub fn get_lora_adapter_by_hash(
+        &self,
+        hash: [u8; 32],
+    ) -> Result<&ArchivedXaeroLoRAAdapter, Box<dyn std::error::Error>> {
+        let mut tx = self.env.begin_ro_txn()?;
+        let res = tx.get(self.lora_adapter_db, &hash)?;
+        let res = rkyv::api::high::access::<ArchivedXaeroLoRAAdapter, Failure>(res)?;
+        tx.commit()?;
+        Ok(res)
+    }
+}
+impl Drop for LmdbStore {
+    fn drop(self) {
+        unsafe {
+            // TODO: additional code here if necessary for our store.
+            drop(self.env);
+        }
+    }
+}
+

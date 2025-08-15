@@ -1,14 +1,29 @@
-mod model_analyzer;
-mod storage;
+extern crate core;
+
+pub mod model_analyzer;
+pub mod storage;
+pub mod vectorizer;
+pub mod yolo;
 
 use bytemuck::{Pod, Zeroable};
 use candle_core::quantized::QuantizedType;
-use candle_core::{Shape, shape};
+use candle_core::{Shape, Tensor, shape};
 use rkyv::Archive;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+use rkyv::bytecheck::CheckBytes;
 use xaeroid::XaeroID;
 
+pub const XAERO_AI_EVENT_TYPE_BASE : u32 = 108;
+pub const LORA_ADAPTER_CREATION : u32 = 0;
+
+pub trait XaeroAIModelOps {
+    fn forward_with_lora(
+        &self,
+        input: &Tensor,
+        user_id: Option<XaeroID>,
+    ) -> Result<Tensor, Box<dyn std::error::Error>>;
+}
 pub struct XaeroAIModelRegistry {
     pub xaero_id: [u8; 32],
     pub models: Vec<XaeroAIModel>,
@@ -57,25 +72,31 @@ pub struct XaeroModelArchitecture {
     pub head_layers: Vec<XaeroAIModelLayer>,
 }
 
+#[repr(C)]
+#[derive(Debug, Clone, Archive,Serialize, Deserialize)]
 pub struct XaeroLoRALayerWeights {
     pub layer_id: [u8; 32],
-    pub original_shape: Shape, // [out_dim, in_dim] for the original layer
+    pub original_shape: [usize; 4], // [out_dim, in_dim] for the original layer
     pub lora_a: Vec<f32>,      // Flattened A matrix [in_dim, rank]
     pub lora_b: Vec<f32>,      // Flattened B matrix [rank, out_dim]
     pub scaling_factor: f64,   // alpha / rank
 }
 
+
+#[repr(C)]
+#[derive(Debug, Clone, Archive,Serialize, Deserialize, CheckBytes)]
 pub struct XaeroLoRAAdapter {
     pub adapter_id: [u8; 32],
     pub base_model_hash: [u8; 32],
     pub user_id: [u8; 32],
-    pub domain: String, // "whiteboard", "medical", "automotive"
+    pub domain: String,
     pub rank: usize,
     pub alpha: f64,
-    pub layer_adaptations: BTreeMap<XaeroID, XaeroLoRALayerWeights>,
+    pub layer_adaptations: BTreeMap<[u8; 32], XaeroLoRALayerWeights>,
     pub training_metadata: LoRATrainingMeta,
 }
-
+#[repr(C)]
+#[derive(Debug, Clone, Archive,Serialize, Deserialize)]
 pub struct LoRATrainingMeta {
     pub epochs_trained: u32,
     pub final_loss: f64,
@@ -84,8 +105,7 @@ pub struct LoRATrainingMeta {
 }
 
 #[repr(C, align(64))]
-#[derive(Debug, Copy, Clone)]
-#[derive(Archive, Serialize, Deserialize)]
+#[derive(Debug, Copy, Clone, Archive, Serialize, Deserialize)]
 pub struct LoRAMetrics {
     // Performance metrics
     pub task_accuracy: f64,       // How well it performs on validation set

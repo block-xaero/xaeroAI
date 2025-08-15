@@ -25,6 +25,7 @@ include = [
 
 
 [dependencies]
+lmdb = "0.8.0"
 tracing = "0.1.41"
 #====== Rusted Ring ================#
 rusted-ring = "0.5.6"
