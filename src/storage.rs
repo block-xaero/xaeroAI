@@ -38,7 +38,7 @@ impl LmdbStore {
         }
     }
 
-    pub fn create_lora_adapter_db(&mut self) {
+    pub fn create_lora_adapter_db(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         unsafe {
             let rw = self.env.begin_rw_txn()?;
             let db = rw.create_db(Some("lora_adapter_db"), DatabaseFlags::default())?;
@@ -46,17 +46,23 @@ impl LmdbStore {
             rw.commit()?;
             self.lora_adapter_db = db;
         }
+        Ok(())
     }
     pub fn push_lora_adapter(
         &mut self,
         adapter: &XaeroLoRAAdapter,
     ) -> Result<[u8; 32], Box<dyn std::error::Error>> {
         unsafe {
-            let bytes = rkyv::to_bytes(adapter)?.as_slice();
-            let hash = blake_hash_slice(bytes);
+            let bytes = rkyv::api::high::to_bytes(adapter)?.to_vec();
+            let hash = blake_hash_slice(&bytes);
             tracing::debug!("hashed to {hash:?}");
             let mut tx = self.env.begin_rw_txn()?;
-            tx.put::<[u8; 32], [u8]>(self.lora_adapter_db, &hash, bytes, WriteFlags::NO_DUP_DATA)?;
+            tx.put::<[u8; 32], Vec<u8>>(
+                self.lora_adapter_db,
+                &hash,
+                &bytes,
+                WriteFlags::NO_DUP_DATA,
+            )?;
             tx.commit()?;
             Ok(hash)
         }
@@ -73,12 +79,3 @@ impl LmdbStore {
         Ok(res)
     }
 }
-impl Drop for LmdbStore {
-    fn drop(self) {
-        unsafe {
-            // TODO: additional code here if necessary for our store.
-            drop(self.env);
-        }
-    }
-}
-
