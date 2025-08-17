@@ -7,14 +7,13 @@ pub mod yolo;
 
 use bytemuck::{Pod, Zeroable};
 use candle_core::quantized::QuantizedType;
-use candle_core::{shape, Tensor};
-use rkyv::bytecheck::CheckBytes;
+use candle_core::{Tensor, shape};
 use rkyv::Archive;
-use serde::{Deserialize, Serialize};
+use rkyv::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-pub const XAERO_AI_EVENT_TYPE_BASE : u32 = 108;
-pub const LORA_ADAPTER_CREATION : u32 = 0;
+pub const XAERO_AI_EVENT_TYPE_BASE: u32 = 108;
+pub const LORA_ADAPTER_CREATION: u32 = 0;
 
 pub trait XaeroAIModelOps {
     fn forward_with_lora(
@@ -72,21 +71,19 @@ pub struct XaeroModelArchitecture {
 }
 
 #[repr(C)]
-#[derive(Debug, Clone, Archive,Serialize, Deserialize)]
+#[derive(Archive, Serialize, Deserialize, Debug, Clone, Default)]
+#[rkyv(derive(Debug))]
 pub struct XaeroLoRALayerWeights {
     pub layer_id: [u8; 32],
     pub original_shape: [usize; 4], // [out_dim, in_dim] for the original layer
-    pub lora_a: Vec<f32>,      // Flattened A matrix [in_dim, rank]
-    pub lora_b: Vec<f32>,      // Flattened B matrix [rank, out_dim]
-    pub scaling_factor: f64,   // alpha / rank
+    pub lora_a: Vec<f32>,           // Flattened A matrix [in_dim, rank]
+    pub lora_b: Vec<f32>,           // Flattened B matrix [rank, out_dim]
+    pub scaling_factor: f64,        // alpha / rank
 }
 
-
-#[repr(C)]
-#[derive(Debug, Clone, Archive,Serialize, Deserialize, Default)]
-#[rkyv(
-    derive(Debug),
-)]
+#[repr(C, align(64))]
+#[derive(Archive, Serialize, Deserialize, Debug, Clone, Default)]
+#[rkyv(derive(Debug))]
 pub struct XaeroLoRAAdapter {
     pub adapter_id: [u8; 32],
     pub base_model_hash: [u8; 32],
@@ -98,10 +95,8 @@ pub struct XaeroLoRAAdapter {
     pub training_metadata: LoRATrainingMeta,
 }
 #[repr(C)]
-#[derive(Debug, Clone, Archive,Serialize, Deserialize, Default)]
-#[rkyv(
-    derive(Debug),
-)]
+#[derive(Archive, Serialize, Deserialize, Debug, Clone, Default)]
+#[rkyv(derive(Debug))]
 pub struct LoRATrainingMeta {
     pub epochs_trained: u32,
     pub final_loss: f64,
@@ -110,7 +105,7 @@ pub struct LoRATrainingMeta {
 }
 
 #[repr(C, align(64))]
-#[derive(Debug, Copy, Clone, Archive, Serialize, Deserialize)]
+#[derive(Archive, Serialize, Copy, Clone, Debug, Default)]
 pub struct LoRAMetrics {
     // Performance metrics
     pub task_accuracy: f64,       // How well it performs on validation set
@@ -141,23 +136,19 @@ unsafe impl Pod for LoRAMetrics {}
 unsafe impl Zeroable for LoRAMetrics {}
 
 #[repr(C, align(64))]
-#[derive(Debug, Clone, Archive,Serialize, Deserialize, Default)]
-#[rkyv(
-    derive(Debug),
-)]
+#[derive(Debug, Clone, Archive, Serialize, Copy, Default)]
 pub struct LoRAAdapterDiscovered {
     adapter_id: [u8; 32],
     base_model_hash: [u8; 32],
-    domain: String,
-    performance_metrics: Option<LoRAMetrics>,
+    domain: [u8; 32],
+    performance_metrics: LoRAMetrics,
 }
-
+unsafe impl Pod for LoRAAdapterDiscovered {}
+unsafe impl Zeroable for LoRAAdapterDiscovered {}
 // Training Lifecycle
 #[repr(C, align(64))]
-#[derive(Debug, Clone, Archive,Serialize, Deserialize, Default)]
-#[rkyv(
-    derive(Debug),
-)]
+#[derive(Debug, Clone, Archive, Serialize, Deserialize, Default)]
+#[rkyv(derive(Debug))]
 pub struct LoRATrainingRequested {
     base_model_id: [u8; 32],
     user_id: [u8; 32],
@@ -167,10 +158,8 @@ pub struct LoRATrainingRequested {
 }
 
 #[repr(C, align(64))]
-#[derive(Debug, Clone, Archive,Serialize, Deserialize, Default)]
-#[rkyv(
-    derive(Debug),
-)]
+#[derive(Debug, Clone, Archive, Serialize, Deserialize, Default)]
+#[rkyv(derive(Debug))]
 pub struct LoRAEpochCompleted {
     adapter_id: [u8; 32],
     epoch: u32,
@@ -180,10 +169,8 @@ pub struct LoRAEpochCompleted {
 
 // Composition & Inference
 #[repr(C, align(64))]
-#[derive(Debug, Clone, Archive,Serialize, Deserialize, Default)]
-#[rkyv(
-    derive(Debug),
-)]
+#[derive(Debug, Clone, Archive, Serialize, Deserialize, Default)]
+#[rkyv(derive(Debug))]
 pub struct LoRACompositionRequested {
     base_model_id: [u8; 32],
     adapter_ids: Vec<[u8; 32]>, // Can stack multiple LoRAs
@@ -191,20 +178,16 @@ pub struct LoRACompositionRequested {
 }
 
 #[repr(C, align(64))]
-#[derive(Debug, Clone, Archive,Serialize, Deserialize, Default)]
-#[rkyv(
-    derive(Debug),
-)]
+#[derive(Debug, Clone, Archive, Serialize, Deserialize, Default)]
+#[rkyv(derive(Debug))]
 pub struct LoRAWeightsComposed {
     composition_id: [u8; 32],
     layer_deltas: BTreeMap<[u8; 32], Vec<f32>>, // Final composed weight deltas
 }
 
 #[repr(C, align(64))]
-#[derive(Debug, Clone, Archive,Serialize, Deserialize, Default)]
-#[rkyv(
-    derive(Debug),
-)]
+#[derive(Debug, Clone, Archive, Serialize, Deserialize, Default)]
+#[rkyv(derive(Debug))]
 pub struct LoRAHyperparams {
     pub rank: usize,
     pub alpha: f64,

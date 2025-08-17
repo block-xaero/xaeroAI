@@ -5,7 +5,6 @@ use candle_nn::VarBuilder;
 use std::error::Error;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
-use xaeroid::XaeroID;
 
 pub struct YoloLoraAdaptedModel {
     adapter_db: Arc<Mutex<LmdbStore>>,
@@ -29,8 +28,23 @@ impl XaeroAIModelOps for YoloLoraAdaptedModel {
             .lora_adapters
             .get(&user_id)
             .expect("cannot find lora adapter hash for the user -- fail fast!");
-        let adapter_db = self.adapter_db.lock()?;
-        let res = adapter_db.get_lora_adapter_by_hash(*lora_adapter_hash)?;
-        Ok(Tensor::from(input.clone()))
+        match self.adapter_db.lock() {
+            Ok(mut adapter_db) => {
+                let res = adapter_db.get_lora_adapter_db_by_hash(*lora_adapter_hash)?;
+                match res {
+                    None => {
+                        panic!("cannot get lora adapter db for user -- fail fast!");
+                    }
+                    Some(adapter) => {
+                        //
+                    }
+                }
+                Ok(Tensor::from(input.clone()))
+            }
+            Err(e) => {
+                // todo: unsure if we fail fast or not
+                panic!("failed to lock to get adapter {e:?}");
+            }
+        }
     }
 }
