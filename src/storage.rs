@@ -13,13 +13,12 @@ use xaeroid::XaeroID;
 static HANDLE: OnceLock<XaeroFlux> = OnceLock::new();
 
 pub fn get_xaeroflux_handle(xid: XaeroID) -> &'static XaeroFlux {
-    let mut xf = HANDLE.get_or_init(|| {
+    (HANDLE.get_or_init(|| {
         let mut xf = XaeroFlux::new();
         xf.start_aof().expect("AOF failed to initialize");
         xf.start_p2p(xid).expect("P2P failed to initialize");
         xf
-    });
-    xf
+    })) as _
 }
 
 pub struct LmdbStore {
@@ -116,16 +115,16 @@ impl LmdbStore {
         }
     }
 
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
     pub fn tx_commit(&mut self, txn: *mut MDB_txn) -> *mut MDB_txn {
-        unsafe {
-            let return_code = mdb_txn_commit(txn);
-            if return_code != 0 {
-                panic!("tx_commit failed with {return_code:?}");
-            }
-            txn
+        let return_code = unsafe { mdb_txn_commit(txn) };
+        if return_code != 0 {
+            panic!("tx_commit failed with {return_code:?}");
         }
+        txn
     }
 
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
     pub fn tx_abort(&mut self, txn: *mut MDB_txn) {
         unsafe { mdb_txn_abort(txn) }
     }

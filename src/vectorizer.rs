@@ -28,8 +28,6 @@ pub fn resize_to(img: DynamicImage, width: u32, height: u32) -> ImageBuffer<Rgb<
     resized
 }
 pub fn vectorize(buffer: ImageBuffer<Rgb<u8>, Vec<u8>>) -> Vec<f32> {
-    use candle_core::{Device, Shape, Tensor};
-
     // 1. Convert pixel values to floats and normalize
     let pixels: Vec<f32> = buffer
         .pixels() // Iterator over each pixel
@@ -61,9 +59,9 @@ pub fn hwc_to_chw(pixels: Vec<f32>) -> Vec<f32> {
             let hwc_index = (h * 640 + w) * 3; // Where this pixel is in HWC format
 
             // Red channel: put all reds together
-            chw_data[0 * 640 * 640 + h * 640 + w] = pixels[hwc_index + 0];
+            chw_data[(h * 640) + w] = pixels[hwc_index];
             // Green channel: put all greens together
-            chw_data[1 * 640 * 640 + h * 640 + w] = pixels[hwc_index + 1];
+            chw_data[640 * 640 + h * 640 + w] = pixels[hwc_index + 1];
             // Blue channel: put all blues together
             chw_data[2 * 640 * 640 + h * 640 + w] = pixels[hwc_index + 2];
         }

@@ -10,6 +10,7 @@ pub struct YoloLoraAdaptedModel {
     adapter_db: Arc<Mutex<LmdbStore>>,
     pub xaero_aimodel: XaeroAIModel,
 }
+#[allow(unused_variables)]
 impl XaeroAIModelOps for YoloLoraAdaptedModel {
     fn forward_with_lora(
         &self,
@@ -39,7 +40,7 @@ impl XaeroAIModelOps for YoloLoraAdaptedModel {
                         //
                     }
                 }
-                Ok(Tensor::from(input.clone()))
+                Ok(input.clone())
             }
             Err(e) => {
                 // todo: unsure if we fail fast or not
