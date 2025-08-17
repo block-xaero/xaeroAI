@@ -10,6 +10,7 @@ pub struct YoloLoraAdaptedModel {
     adapter_db: Arc<Mutex<LmdbStore>>,
     pub xaero_aimodel: XaeroAIModel,
 }
+
 #[allow(unused_variables)]
 impl XaeroAIModelOps for YoloLoraAdaptedModel {
     fn forward_with_lora(
@@ -17,13 +18,20 @@ impl XaeroAIModelOps for YoloLoraAdaptedModel {
         input: &Tensor,
         user_id: [u8; 32],
     ) -> Result<Tensor, Box<dyn Error>> {
-        let mmapd_safetensor = unsafe {
-            VarBuilder::from_mmaped_safetensors(
-                &[Path::new("models/yolo11n.safetensors")],
-                DType::F32,
-                &Device::Cpu,
-            )
-        };
+        let layer_to_tensors =
+            candle_core::safetensors::load("models/yolo11n.safetensors", &Device::Cpu)?;
+        // for tensor_entry in layer_to_tensors.iter(){
+        //     match tensor_entry.0 {
+        //         "" => {}
+        //     }
+        //         self.xaero_aimodel.arch.neck_layers
+        // }
+        // for layer_name in mmapd_safetensor.tensor_names
+        // for layer in self.xaero_aimodel.arch.backbone_layers{
+        //     let layer_tensor = mmapd_safetensor.get(,layer.layer_name)?;
+        // }
+        //
+        // mmapd_safetensor.get()
         let lora_adapter_hash = self
             .xaero_aimodel
             .lora_adapters
@@ -36,9 +44,7 @@ impl XaeroAIModelOps for YoloLoraAdaptedModel {
                     None => {
                         panic!("cannot get lora adapter db for user -- fail fast!");
                     }
-                    Some(adapter) => {
-                        //
-                    }
+                    Some(adapter) => {}
                 }
                 Ok(input.clone())
             }

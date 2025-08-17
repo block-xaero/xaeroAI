@@ -6,9 +6,10 @@ pub mod vectorizer;
 pub mod yolo;
 
 use bytemuck::{Pod, Zeroable};
+use candle_core::Tensor;
 use candle_core::quantized::QuantizedType;
-use candle_core::{Tensor, shape};
 use rkyv::Archive;
+use rkyv::ser::{Allocator, Writer};
 use rkyv::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -36,27 +37,45 @@ pub struct XaeroAIModel {
     pub base_size_bytes: u64,                 // For P2P transfer planning
 }
 
+#[repr(C, align(64))]
+#[derive(Archive, Serialize, Deserialize, Debug, Copy, Clone)]
 pub enum XaeroLayerType {
     Conv,
     Linear,
     Attention,
 }
+
+#[repr(C, align(64))]
+#[derive(Archive, Serialize, Deserialize, Debug, Copy, Clone)]
+pub enum XaeroAILayerSection {
+    Backbone,
+    Neck,
+    Head,
+    Unknown,
+}
+
+#[repr(C, align(64))]
+#[derive(Archive, Serialize, Deserialize, Debug, Clone)]
 pub struct XaeroAIModelLayer {
     pub layer_id: [u8; 32],
+    pub layer_name: String,
     pub layer_type: XaeroLayerType,
     pub lora_target: bool,
-    pub shape: shape::Shape,
+    pub shape: [usize; 4],
     pub weights: Vec<u8>, // Raw quantized bytes
     pub quantization_info: QuantizationInfo,
+    pub section: XaeroAILayerSection,
 }
 #[repr(C, align(64))]
+#[derive(Archive, Serialize, Deserialize, Debug, Copy, Clone)]
 pub struct QuantizationInfo {
     pub dtype: QuantizedDType,
     pub scale: f32,
     pub zero_point: i32,
 }
 
-#[derive(Debug, Clone)]
+#[repr(C, align(64))]
+#[derive(Archive, Serialize, Deserialize, Debug, Copy, Clone)]
 pub enum QuantizedDType {
     Q4_0, // 4-bit
     Q8_0, // 8-bit
