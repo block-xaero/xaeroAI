@@ -7,9 +7,9 @@ pub mod yolo;
 
 use bytemuck::{Pod, Zeroable};
 use candle_core::quantized::QuantizedType;
-use candle_core::Tensor;
-use rkyv::ser::{Allocator, Writer};
+use candle_core::{Module, Tensor};
 use rkyv::Archive;
+use rkyv::ser::{Allocator, Writer};
 use rkyv::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -35,6 +35,9 @@ pub struct XaeroAIModel {
     pub quantization: Box<dyn QuantizedType>, // INT8, INT4, F16, etc.
     pub lora_adapters: BTreeMap<[u8; 32], [u8; 32]>, // user_id -> lora_delta_hash
     pub base_size_bytes: u64,                 // For P2P transfer planning
+    pub backbone: Box<dyn Module>,
+    pub neck: Box<dyn Module>,
+    pub head: Box<dyn Module>,
 }
 
 #[repr(C, align(64))]
@@ -216,7 +219,6 @@ pub struct LoRAHyperparams {
     pub max_epochs: u32,
     pub target_loss: f64,
 }
-
 
 pub fn classify_section(layer_name: &str) -> XaeroAILayerSection {
     if is_head_layer(layer_name) {

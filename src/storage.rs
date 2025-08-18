@@ -77,8 +77,8 @@ impl LmdbStore {
     }
 
     pub fn get_lora_adapter_db_by_hash(
-        &mut self,
-        adapter_key: [u8; 32],
+        &self,
+        adapter_key: &[u8; 32],
     ) -> Result<Option<&ArchivedXaeroLoRAAdapter>, Box<dyn std::error::Error>> {
         unsafe {
             let mut txn: *mut MDB_txn = std::ptr::null_mut();

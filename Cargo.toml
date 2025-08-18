@@ -37,6 +37,7 @@ xaeroid = "0.4.1"
 candle-core = { version = "0.9.1" }
 candle-nn = "0.9.1"
 safetensors = "0.6.2"
+candle-transformers = "0.9.1"
 
 # ==== Preprocessing ===
 image = "0.25.6"
