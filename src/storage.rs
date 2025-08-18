@@ -1,12 +1,12 @@
 use crate::{ArchivedXaeroLoRAAdapter, XaeroLoRAAdapter};
 use liblmdb::{
-    mdb_env_create, mdb_put, mdb_txn_abort, mdb_txn_begin, mdb_txn_commit, MDB_dbi, MDB_env, MDB_txn,
-    MDB_val, MDB_APPEND, MDB_CREATE, MDB_RDONLY,
+    MDB_APPEND, MDB_CREATE, MDB_RDONLY, MDB_dbi, MDB_env, MDB_txn, MDB_val, mdb_env_create,
+    mdb_put, mdb_txn_abort, mdb_txn_begin, mdb_txn_commit,
 };
 use rkyv::rancor::Failure;
 use std::sync::OnceLock;
-use xaeroflux::actors::aof::storage::lmdb::{from_lmdb_err, open_named_db};
 use xaeroflux::actors::XaeroFlux;
+use xaeroflux::actors::aof::storage::lmdb::{from_lmdb_err, open_named_db};
 use xaeroflux::hash::blake_hash_slice;
 use xaeroid::XaeroID;
 
