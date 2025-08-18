@@ -6,10 +6,10 @@ pub mod vectorizer;
 pub mod yolo;
 
 use bytemuck::{Pod, Zeroable};
-use candle_core::Tensor;
 use candle_core::quantized::QuantizedType;
-use rkyv::Archive;
+use candle_core::Tensor;
 use rkyv::ser::{Allocator, Writer};
+use rkyv::Archive;
 use rkyv::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -66,6 +66,7 @@ pub struct XaeroAIModelLayer {
     pub quantization_info: QuantizationInfo,
     pub section: XaeroAILayerSection,
 }
+
 #[repr(C, align(64))]
 #[derive(Archive, Serialize, Deserialize, Debug, Copy, Clone)]
 pub struct QuantizationInfo {
@@ -214,6 +215,46 @@ pub struct LoRAHyperparams {
     pub batch_size: usize,
     pub max_epochs: u32,
     pub target_loss: f64,
+}
+
+
+pub fn classify_section(layer_name: &str) -> XaeroAILayerSection {
+    if is_head_layer(layer_name) {
+        XaeroAILayerSection::Head
+    } else if is_neck_layer(layer_name) {
+        XaeroAILayerSection::Neck
+    } else {
+        XaeroAILayerSection::Backbone
+    }
+}
+
+pub fn is_head_layer(name: &str) -> bool {
+    // YOLO head patterns
+    name.contains("cv2") ||    // Classification head
+        name.contains("cv3") ||    // Regression head
+        name.contains("dfl") ||    // Distribution Focal Loss
+        name.contains("detect") || // General detection head
+        // Model index approach for YOLO
+        (name.starts_with("model.") &&
+            extract_model_index(name).map_or(false, |i| i >= 22))
+}
+
+pub fn is_neck_layer(name: &str) -> bool {
+    name.contains("neck") ||
+        name.contains("fpn") ||
+        name.contains("upsample") ||
+        // YOLO neck range (rough estimate)
+        (name.starts_with("model.") &&
+            extract_model_index(name).map_or(false, |i| i >= 10 && i < 22))
+}
+
+pub fn extract_model_index(name: &str) -> Option<u32> {
+    let parts: Vec<&str> = name.split('.').collect();
+    if parts.len() >= 2 && parts[0] == "model" {
+        parts[1].parse().ok()
+    } else {
+        None
+    }
 }
 
 #[cfg(test)]

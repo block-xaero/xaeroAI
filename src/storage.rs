@@ -1,12 +1,12 @@
 use crate::{ArchivedXaeroLoRAAdapter, XaeroLoRAAdapter};
 use liblmdb::{
-    MDB_APPEND, MDB_CREATE, MDB_RDONLY, MDB_dbi, MDB_env, MDB_txn, MDB_val, mdb_env_create,
-    mdb_put, mdb_txn_abort, mdb_txn_begin, mdb_txn_commit,
+    mdb_env_create, mdb_put, mdb_txn_abort, mdb_txn_begin, mdb_txn_commit, MDB_dbi, MDB_env, MDB_txn,
+    MDB_val, MDB_APPEND, MDB_CREATE, MDB_RDONLY,
 };
 use rkyv::rancor::Failure;
 use std::sync::OnceLock;
-use xaeroflux::actors::XaeroFlux;
 use xaeroflux::actors::aof::storage::lmdb::{from_lmdb_err, open_named_db};
+use xaeroflux::actors::XaeroFlux;
 use xaeroflux::hash::blake_hash_slice;
 use xaeroid::XaeroID;
 
@@ -26,19 +26,26 @@ pub struct LmdbStore {
     pub lora_adapter_db: MDB_dbi,
 }
 impl LmdbStore {
-    pub fn create_env(&mut self) {
+    pub fn new() -> Self {
+        let env = std::ptr::null_mut();
         unsafe {
-            let env_creation_result = mdb_env_create(self.env as *mut _);
+            let env_creation_result = mdb_env_create(env as *mut _);
             if env_creation_result != 0 {
                 panic!("mdb_env_create failed with {env_creation_result:?}");
             }
+        };
+        let lora_adapter_db: MDB_dbi = unsafe {
+            match open_named_db(env, c"/lora_adapters_db".as_ptr()) {
+                Ok(dbi) => dbi,
+                Err(e) => {
+                    panic!("open_named_db failed with {e:?}");
+                }
+            }
+        };
+        Self {
+            env,
+            lora_adapter_db,
         }
-    }
-
-    pub fn create_lora_adapter_db(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-        let lora_adapter_dbi: MDB_dbi = unsafe { open_named_db(self.env, c"/aof".as_ptr())? };
-        self.lora_adapter_db = lora_adapter_dbi;
-        Ok(())
     }
 
     pub fn push_lora_adapter_db(

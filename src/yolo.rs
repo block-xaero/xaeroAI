@@ -1,5 +1,5 @@
 use crate::storage::LmdbStore;
-use crate::{XaeroAILayerSection, XaeroAIModel, XaeroAIModelOps, XaeroLayerType};
+use crate::{classify_section, QuantizationInfo, QuantizedDType, XaeroAILayerSection, XaeroAIModel, XaeroAIModelLayer, XaeroAIModelOps, XaeroLayerType};
 use candle_core::{Device, Tensor};
 use std::error::Error;
 use std::sync::{Arc, Mutex};
@@ -7,6 +7,33 @@ use std::sync::{Arc, Mutex};
 pub struct YoloLoraAdaptedModel {
     adapter_db: Arc<Mutex<LmdbStore>>,
     pub xaero_aimodel: XaeroAIModel,
+}
+
+impl YoloLoraAdaptedModel {
+    fn infer_type_from_name(name: &str) -> XaeroLayerType {
+        if name.contains("conv") { XaeroLayerType::Conv } else if name.contains("linear") || name.contains("fc") { XaeroLayerType::Linear } else { XaeroLayerType::Conv } // default
+    }
+
+    fn should_adapt_layer(name: &str) -> bool {
+        name.contains("cv2") || name.contains("cv3") || name.contains("dfl")
+    }
+
+    pub fn from_tensor_with_name(tensor: &Tensor, layer_name: &str) -> XaeroAIModelLayer {
+        XaeroAIModelLayer {
+            layer_id: blake3::hash(layer_name.as_bytes()).into(),
+            layer_name: layer_name.to_string(),
+            layer_type: Self::infer_type_from_name(layer_name),
+            lora_target: Self::should_adapt_layer(layer_name),
+            shape: tensor.shape().dims4().unwrap().into(),
+            weights: vec![], // Empty for mmap
+            quantization_info: QuantizationInfo {
+                dtype: QuantizedDType::Q4_0,
+                scale: 0.0,
+                zero_point: 0,
+            },
+            section: classify_section(layer_name),
+        }
+    }
 }
 #[allow(unused_variables)]
 impl XaeroAIModelOps for YoloLoraAdaptedModel {
@@ -25,13 +52,7 @@ impl XaeroAIModelOps for YoloLoraAdaptedModel {
             let model_idx = parts[1].parse::<u32>()?;
             let component = parts[2].parse::<u8>()?;
             let operation = parts[3].parse::<u8>()?;
-            if ((parts[2].contains("head") ||
-               parts[2].contains("classifier") ||
-               parts[2].contains("fc") ||
-               parts[2].contains("detect") ||
-               parts[2].contains("dfl"))
-              && model_idx > 22) {
-            }
+            
         }
 
         // mmapd_safetensor.get()
