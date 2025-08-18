@@ -1,16 +1,13 @@
 use crate::storage::LmdbStore;
-use crate::{XaeroAIModel, XaeroAIModelOps};
-use candle_core::{DType, Device, Tensor};
-use candle_nn::VarBuilder;
+use crate::{XaeroAILayerSection, XaeroAIModel, XaeroAIModelOps, XaeroLayerType};
+use candle_core::{Device, Tensor};
 use std::error::Error;
-use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 pub struct YoloLoraAdaptedModel {
     adapter_db: Arc<Mutex<LmdbStore>>,
     pub xaero_aimodel: XaeroAIModel,
 }
-
 #[allow(unused_variables)]
 impl XaeroAIModelOps for YoloLoraAdaptedModel {
     fn forward_with_lora(
@@ -20,17 +17,23 @@ impl XaeroAIModelOps for YoloLoraAdaptedModel {
     ) -> Result<Tensor, Box<dyn Error>> {
         let layer_to_tensors =
             candle_core::safetensors::load("models/yolo11n.safetensors", &Device::Cpu)?;
-        // for tensor_entry in layer_to_tensors.iter(){
-        //     match tensor_entry.0 {
-        //         "" => {}
-        //     }
-        //         self.xaero_aimodel.arch.neck_layers
-        // }
-        // for layer_name in mmapd_safetensor.tensor_names
-        // for layer in self.xaero_aimodel.arch.backbone_layers{
-        //     let layer_tensor = mmapd_safetensor.get(,layer.layer_name)?;
-        // }
-        //
+        for tensor_entry in layer_to_tensors.iter() {
+            // model.X.cv1.conv.weight"
+            let split_layer_name = tensor_entry.0.split(".");
+            let vec_from_split_layer_name = split_layer_name.collect::<Vec<&str>>();
+            let parts = vec_from_split_layer_name.as_slice();
+            let model_idx = parts[1].parse::<u32>()?;
+            let component = parts[2].parse::<u8>()?;
+            let operation = parts[3].parse::<u8>()?;
+            if ((parts[2].contains("head") ||
+               parts[2].contains("classifier") ||
+               parts[2].contains("fc") ||
+               parts[2].contains("detect") ||
+               parts[2].contains("dfl"))
+              && model_idx > 22) {
+            }
+        }
+
         // mmapd_safetensor.get()
         let lora_adapter_hash = self
             .xaero_aimodel
