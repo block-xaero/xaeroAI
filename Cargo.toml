@@ -1,60 +1,13 @@
-# Cargo.toml
 [package]
 name = "xaeroai"
-version = "0.0.1"
-edition = "2024"
-authors = ["Anirudh Vyas <ricky.nj@gmail.com>"]
-description = "Generalized framework for building distributed AI agent P2P meshes"
-license = "MIT OR Apache-2.0 or MPL-2.0"
-repository = "https://github.com/block-xaero/xaeroai"
-keywords = ["ai", "p2p", "agents", "distributed", "mesh"]
-categories = ["science", "network-programming"]
-
-[lib]
-name = "xaeroai"
-crate-type = ["cdylib", "rlib"]  # Support both library and FFI usage
-
-
-# Include models in the published crate
-include = [
-    "src/**/*",
-    "models/nano/**/*",
-    "Cargo.toml",
-    "README.md"
-]
-
+version = "0.1.0"
+edition = "2021"
 
 [dependencies]
-liblmdb = "0.9.70"
-tracing = "0.1.41"
-#====== Rusted Ring ================#
-rusted-ring = "0.5.6"
-# ===== Xaeroflux dependencies ======
-xaeroflux = "0.9.0-alpha"
-xaeroid = "0.4.1"
-
-# ===== CORE AI/ML =====
-candle-core = { version = "0.9.1" }
-candle-nn = "0.9.1"
-safetensors = "0.6.2"
-candle-transformers = "0.9.1"
-
-# ==== Preprocessing ===
-image = "0.25.6"
-
-# ===== SERIALIZATION & DATA =====
-serde = { version = "1.0", features = ["derive"] }
-rkyv = { version = "0.8.10"}
-bytemuck = "1.23.2"
-blake3 = "1.8.2"
-
-
-
-[profile.release]
-opt-level = 3
-lto = true
-codegen-units = 1
-panic = "abort"             # Smaller binaries
-
-[profile.dev]
-opt-level = 1               # Faster debug builds
+candle-core = "0.3"
+candle-nn = "0.3"
+candle-transformers = "0.3"
+safetensors = "0.3"
+tokenizers = "0.14"
+image = "0.24"
+anyhow = "1.0"
