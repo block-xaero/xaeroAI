@@ -1,7 +1,8 @@
 [package]
 name = "xaeroai"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
+license-file = "LICENSE"
 
 [dependencies]
 candle-core = "0.3"
