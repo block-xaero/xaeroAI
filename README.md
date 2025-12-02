@@ -1,119 +1,159 @@
 # XaeroAI
 
-Nano AI models for peer-to-peer distributed learning and inference.
+Fine-tuned AI models for software design analysis, integrated with the Cyan ecosystem.
 
 ## What is this?
 
-XaeroAI provides small, efficient AI models that can:
-- Run inference on mobile devices
-- Learn from each other over a network
-- Coordinate tasks without central servers
+XaeroAI provides the AI backbone for Cyan's design-first collaboration tools:
+- **Design Analyst**: Analyze project health from Jira/Slack/GitHub data
+- **Mermaid Generation**: Create sequence diagrams, flowcharts, class diagrams
+- **Pattern Detection**: Identify GoF, enterprise, and Rust design patterns
 
-Each model is a network peer that discovers other models and collaborates on AI tasks.
+## Current Model
 
-## Models
+| Model | Base | Size | Format |
+|-------|------|------|--------|
+| Cyan Lens v4 | Phi-3-mini-4k-instruct | ~2GB | GGUF Q4_K_M |
 
-We provide 4 nano models, each optimized for specific tasks:
+**HuggingFace**: [blockxaero/cyan-lens](https://huggingface.co/blockxaero/cyan-lens)
 
-| Model | Size | Purpose |
-|-------|------|---------|
-| Phi-2 Code | 63MB | Code completion and analysis |
-| CodeGen 350M | 60MB | Code generation |
-| TrOCR Small | 56MB | Handwritten text recognition |
-| TrOCR Base | 47MB | Printed text recognition |
+## Capabilities
 
-Total: ~226MB for all models.
-
-## How it works
-
-### Model Storage
-Models are compressed and split into 25MB chunks for efficient distribution:
+### Project Health Analysis
 ```
-models/nano/
-├── phi2_ultra_code_nano_part_000     # 25MB chunk
-├── phi2_ultra_code_nano_part_001     # 25MB chunk  
-├── phi2_ultra_code_nano_manifest.txt # Assembly instructions
-└── ... (other models)
+Input: <context>Ticket: AUTH-101, Days open: 45, Slack mentions: 67, PRs: 0</context>
+
+Output: {
+  "status": "critical",
+  "issues": ["No PRs after 45 days", "High team concern (67 mentions)"],
+  "recommendations": ["Assign owner", "Break into smaller tasks"]
+}
 ```
 
-### Memory Loading
-Models use memory-mapped loading via Candle:
-- Load only the parts needed for current tasks
-- Efficient memory usage on mobile devices
-- Stream model weights as needed
-
-### Peer-to-Peer Learning
-Models connect through XaeroFlux subjects:
-- Discover other models in the network
-- Share learning updates via CRDT operations
-- Coordinate multi-model tasks
-- Learn from workspace events (whiteboard, chat, etc.)
-
-## Architecture
-
+### Mermaid Diagram Generation
 ```
-AI Model Peer
-├── Local inference (Candle + mmap)
-├── Network coordination (XaeroFlux subjects)
-├── Learning from events (CRDT operations)
-└── Task collaboration (gossipsub)
+Input: Create a Mermaid sequenceDiagram for OAuth2 login
+
+Output:
+sequenceDiagram
+    participant User
+    participant App
+    participant AuthServer
+    User->>App: Click Login
+    App->>AuthServer: Auth Request
+    AuthServer-->>App: Token
 ```
 
-Each model subscribes to relevant subjects:
-- `workspace/ai/discovery` - Find other models
-- `workspace/ai/tasks` - Coordinate inference requests
-- `workspace/ai/learning` - Share parameter updates
-- `workspace/{id}/data` - Learn from workspace activity
+### Diagram Support
+
+| Type | Status |
+|------|--------|
+| sequenceDiagram | ✅ Works |
+| flowchart | ✅ Works |
+| classDiagram | ⚠️ Partial |
+| erDiagram | ❌ Unreliable |
+| stateDiagram | ❌ Unreliable |
+
+## Project Structure
+
+```
+xaeroai/
+├── src/lib.rs              # Rust types for Cyan integration
+├── adapters/
+│   └── design-analyst-v4/  # MLX LoRA adapter
+├── models/                 # GGUF models (gitignored, download from HF)
+├── data/
+│   └── mlx_final/          # Training data
+├── scripts/
+│   ├── train.py            # Train/continue training
+│   ├── export.py           # Merge LoRA + GGUF conversion
+│   ├── test.py             # Test model outputs
+│   └── generate_data.py    # Generate training data
+└── lora_config.yaml        # Training configuration
+```
 
 ## Usage
 
-```rust
-use xaeroai::{XaeroAIModel, XaeroAISubject};
-
-// Load a nano model
-let model = XaeroAIModel::load("phi2_ultra_code_nano")?;
-
-// Connect to network
-let subject = XaeroAISubject::new(model.id)?;
-subject.subscribe_to_discovery();
-
-// The model automatically:
-// - Announces itself to other peers
-// - Responds to inference requests
-// - Learns from workspace events
-// - Coordinates with other models
-```
-
-## Integration
-
-XaeroAI integrates with:
-- **XaeroFlux** - Event streaming and CRDT operations
-- **XaeroID** - Peer identity and authentication
-- **Candle** - Efficient model inference
-- **Flutter/Dart** - Mobile app integration
-
-## Building
-
-1. Reassemble models from parts:
+### Quick Test (llama-cli)
 ```bash
-# Models auto-reassemble during build
-cargo build
+llama-cli -m models/cyan-lens-q4.gguf \
+    -p "<|user|>Create a Mermaid sequenceDiagram for user login<|end|><|assistant|>" \
+    -n 400
 ```
 
-2. The build process:
-    - Combines model parts into complete models
-    - Sets up Candle for memory-mapped loading
-    - Prepares models for peer-to-peer coordination
+### Ollama
+```bash
+ollama create cyan-lens -f Modelfile
+ollama run cyan-lens "Analyze: 45 days open, 67 Slack mentions, 0 PRs"
+```
+
+### MLX (Apple Silicon)
+```bash
+python -m mlx_lm generate \
+    --model microsoft/Phi-3-mini-4k-instruct \
+    --adapter-path adapters/design-analyst-v4 \
+    --max-tokens 400 \
+    --prompt "Create a Mermaid sequenceDiagram for OAuth2"
+```
+
+## Training Pipeline
+
+```bash
+# 1. Train new adapter version
+python scripts/train.py --config lora_config.yaml
+
+# 2. Test with MLX
+python scripts/test.py --use-mlx
+
+# 3. Export to GGUF
+python scripts/export.py --adapter adapters/design-analyst-v4
+
+# 4. Test GGUF
+python scripts/test.py --model models/design-analyst-v4-q4.gguf
+```
+
+## Rust Integration (WIP)
+
+The `src/lib.rs` defines types for Cyan backend integration:
+
+```rust
+use xaeroai::{DesignAnalyst, ModelConfig, AnalysisSource};
+
+// Load model
+let config = ModelConfig::default();
+let mut analyst = DesignAnalyst::new(config);
+analyst.load().await?;
+
+// Analyze
+let result = analyst.analyze(AnalysisSource::RawText {
+    content: "<context>Ticket: AUTH-101...</context>".into(),
+    language: None,
+}).await?;
+```
+
+**Status**: Types defined, inference not yet implemented. Will use `llama-cpp-2` crate for GGUF loading.
+
+## Future Integration
+
+XaeroAI will integrate with:
+- **Cyan Backend** (Swift) - Design analysis in whiteboard app
+- **XaeroFlux** - Event-driven inference requests
+- **XaeroID** - Authenticated model access
 
 ## Development
 
-Models are created from foundation models using:
-1. Quantization (4-bit) for size reduction
-2. Knowledge distillation for nano architectures
-3. Compression and splitting for git-friendly storage
+### Requirements
+- Python 3.11+
+- MLX (Apple Silicon) or PyTorch
+- llama.cpp (for GGUF)
+- Rust (for lib)
 
-See `scripts/` for model creation and training tools.
+### Install
+```bash
+pip install mlx-lm transformers peft safetensors
+npm install -g @mermaid-js/mermaid-cli  # For validation
+```
 
 ## License
 
-MPL-2.0
+Business Source License. 

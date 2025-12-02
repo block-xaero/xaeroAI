@@ -1,120 +1,69 @@
-# Rust build artifacts
-/target/
-**/*.rs.bk
-Cargo.lock
-.venv
+api.key
+ForReference.MD
+# Models (large files)
+models/*.gguf
+models/*-merged/
+*.gguf
 
-# IDE files
-.vscode/
-.idea/
-*.swp
-*.swo
-*~
+# Adapters (keep latest version, ignore checkpoints)
+adapters/*/0*_adapters.safetensors
 
-# macOS
-.DS_Store
-.AppleDouble
-.LSOverride
-Icon
-._*
-
-# Windows
-Thumbs.db
-ehthumbs.db
-Desktop.ini
-
-# Linux
-*~
-
-# Logs
-*.log
-logs/
-
-# Python cache (for training scripts)
+# Python
 __pycache__/
 *.py[cod]
 *$py.class
 *.so
 .Python
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
 *.egg-info/
-.installed.cfg
+.eggs/
+dist/
+build/
 *.egg
 
-# Jupyter Notebook
-.ipynb_checkpoints
+# Virtual environments
+venv/
+.venv/
+ENV/
 
-# Environment variables
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# Rust
+target/
+Cargo.lock
+
+# API keys
+api.key
 .env
-.env.local
-.env.*.local
+*.key
 
-# Training artifacts and large model files
-models/foundation/          # 8.7GB - too large for git
-models/quantized/          # 2.1GB - training artifacts only
-*.ckpt
-*.pth
-*.pt
-checkpoints/
-wandb/
-tensorboard_logs/
+# Logs
+*.log
+logs/
 
-# Dataset downloads
-data/
-datasets/
-*.zip
-*.tar.gz
-*.tar.bz2
-
-# Temporary files
-tmp/
-temp/
+# Temp files
 *.tmp
-*.temp
-
-# Model training outputs (except nano model parts)
-experiments/
-results/
-outputs/
-
-# Cache directories
 .cache/
-*.cache
 
-# Hugging Face cache
-.cache/huggingface/
+# Jupyter
+.ipynb_checkpoints/
 
-# Local development
-local/
-scratch/
+# Data (keep structure, ignore large generated files)
+data/patterns/*.jsonl
+!data/patterns/.gitkeep
+data/combined_train.jsonl
 
-# Documentation build
-docs/_build/
+# HuggingFace cache
+.huggingface/
 
-# Nano models - ignore everything except parts and manifests
-models/nano/*.safetensors
-models/nano/*_tokenizer/
-models/nano/*_config.json
-models/nano/*_metadata.json
-models/nano/*.7z
-models/nano_backup_*/
+# MLX cache
+mlx_models/
 
-# Keep only nano model parts and manifests
-!models/nano/*_part_*
-!models/nano/*_manifest.txt
-
-# Keep essential scripts
-!scripts/create_nano_models.py
-!scripts/train_ocr_nano.py
-!scripts/download_ocr_datasets.py
+# Test outputs
+test_outputs/
+*.svg
+*.png
