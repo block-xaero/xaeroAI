@@ -14,11 +14,12 @@ XaeroAI provides the AI backbone for Cyan's design-first collaboration tools:
 | Model | Base | Size | Format |
 |-------|------|------|--------|
 | Cyan Lens v4 | Phi-3-mini-4k-instruct | ~2GB | GGUF Q4_K_M |
+| Cyan Lens Segmentation | yolox | TBD | GGUF TBD |
 
 **HuggingFace**: [blockxaero/cyan-lens](https://huggingface.co/blockxaero/cyan-lens)
 
 ## Capabilities
-
+(Cyan Lens v4 only, stay tuned for Lens Segmentation capabilities).
 ### Project Health Analysis
 ```
 Input: <context>Ticket: AUTH-101, Days open: 45, Slack mentions: 67, PRs: 0</context>
