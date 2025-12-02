@@ -156,4 +156,4 @@ npm install -g @mermaid-js/mermaid-cli  # For validation
 
 ## License
 
-Business Source License. 
+Business Source License 1.1
