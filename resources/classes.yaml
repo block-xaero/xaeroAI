@@ -1,0 +1,23 @@
+names:
+  0: rectangle
+  1: rounded_rectangle
+  2: oval
+  3: circle
+  4: diamond
+  5: triangle
+  6: cylinder
+  7: cloud
+  8: hexagon
+  9: parallelogram
+  10: sticky_note
+  11: stick_figure
+  12: solid_arrow
+  13: dashed_arrow
+  14: bidirectional_arrow
+  15: line
+  16: curved_arrow
+  17: start_dot
+  18: end_dot
+  19: text_label
+
+nc: 20

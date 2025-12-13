@@ -1,0 +1,9 @@
+[build]
+rustflags = ["-C", "link-arg=-Wl,-rpath,/opt/homebrew/lib"]
+
+[target.aarch64-apple-darwin]
+rustflags = ["-C", "link-arg=-Wl,-rpath,/opt/homebrew/lib"]
+rustdocflags = ["--cfg", "docsrs"]
+
+[env]
+MACOSX_DEPLOYMENT_TARGET = "11.0"
