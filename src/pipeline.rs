@@ -1,7 +1,8 @@
 //! Whiteboard to Mermaid pipeline
 //!
-//! Orchestrates: YOLO (shapes) → TrOCR (text) → Dictionary (correct) → Phi+LoRA (mermaid)
+//! Orchestrates: YOLO (shapes) → PaddleOCR (text) → Dictionary (correct) → Phi+LoRA (mermaid)
 
+use crate::arrow_detector;
 use crate::dictionary::{Dictionary, DictionaryBuilder, DomainSource};
 use crate::runtime::{DetectedBox, InferenceInput, InferenceOutput, Runtime};
 use crate::skill::Skill;
@@ -73,7 +74,7 @@ pub struct WhiteboardPipeline {
     ocr_model: String,
     phi_model: String,
     dictionary: Dictionary,
-    ocr_dict: Vec<String>,  // Character vocabulary for CTC decode
+    ocr_dict: Vec<String>, // Character vocabulary for CTC decode
 }
 
 impl WhiteboardPipeline {
@@ -88,7 +89,7 @@ impl WhiteboardPipeline {
         let ocr_skill = Skill::load(ocr_dir)?;
         let ocr_model = ocr_skill.name.clone();
         runtime.load_from_skill(&ocr_skill, ocr_dir)?;
-        
+
         // Load OCR dictionary for CTC decoding
         let dict_path = ocr_dir.join("dict.txt");
         let ocr_dict = if dict_path.exists() {
@@ -108,7 +109,18 @@ impl WhiteboardPipeline {
         let phi_model = phi_skill.name.clone();
         runtime.load_from_skill(&phi_skill, phi_dir)?;
 
-        let dictionary = DictionaryBuilder::new().with_common_terms().build();
+        // Load dictionary - try JSON config first, then fall back to defaults
+        let dictionary = {
+            let config_path = Path::new("config/ocr_dictionary.json");
+            if config_path.exists() {
+                Dictionary::load_from_json(config_path).unwrap_or_else(|e| {
+                    tracing::warn!("Failed to load dictionary config: {}, using defaults", e);
+                    DictionaryBuilder::new().with_common_terms().build()
+                })
+            } else {
+                DictionaryBuilder::new().with_common_terms().build()
+            }
+        };
 
         Ok(Self {
             runtime,
@@ -118,6 +130,22 @@ impl WhiteboardPipeline {
             dictionary,
             ocr_dict,
         })
+    }
+
+    /// Create pipeline with custom dictionary config path
+    pub fn with_dictionary_config(
+        yolo_dir: &Path,
+        ocr_dir: &Path,
+        phi_dir: &Path,
+        dict_config: &Path,
+    ) -> Result<Self> {
+        let mut pipeline = Self::new(yolo_dir, ocr_dir, phi_dir)?;
+
+        if dict_config.exists() {
+            pipeline.dictionary = Dictionary::load_from_json(dict_config)?;
+        }
+
+        Ok(pipeline)
     }
 
     /// Add terms to dictionary from current diagram context
@@ -140,7 +168,18 @@ impl WhiteboardPipeline {
 
         // Step 1: Detect shapes with YOLO
         let detect_start = std::time::Instant::now();
-        let boxes = self.detect_shapes(image_data)?;
+        let mut boxes = self.detect_shapes(image_data)?;
+
+        // Step 1b: Fallback arrow detection with imageproc
+        let extra_arrows = arrow_detector::detect_connectors(image_data, &boxes, 50)
+            .unwrap_or_else(|e| {
+                tracing::warn!("Arrow detection failed: {}", e);
+                vec![]
+            });
+
+        // Merge detected arrows into boxes
+        boxes.extend(extra_arrows);
+
         timing.detection_ms = detect_start.elapsed().as_millis() as u64;
 
         // Step 2: Run OCR on text regions
@@ -222,7 +261,6 @@ impl WhiteboardPipeline {
         Ok(shapes)
     }
 
-    /// Crop a shape region and run OCR on it
     fn crop_and_ocr(
         &mut self,
         img: &image::DynamicImage,
@@ -265,6 +303,13 @@ impl WhiteboardPipeline {
                 } else {
                     // Apply dictionary correction
                     let corrected = self.dictionary.correct_phrase(trimmed);
+                    if corrected.was_corrected {
+                        tracing::debug!(
+                            "OCR corrected: '{}' -> '{}'",
+                            corrected.original,
+                            corrected.corrected
+                        );
+                    }
                     Ok(Some(corrected.corrected))
                 }
             }
@@ -289,39 +334,43 @@ impl WhiteboardPipeline {
 
     /// CTC greedy decode: take argmax at each timestep, collapse repeats, remove blanks
     fn ctc_greedy_decode(&self, logits: &serde_json::Value) -> Result<String> {
-        let arr = logits.as_array()
+        let arr = logits
+            .as_array()
             .ok_or_else(|| anyhow!("CTC logits not an array"))?;
-        
+
         let mut result = String::new();
         let mut prev_idx: Option<usize> = None;
-        
+
         for timestep in arr {
-            let probs = timestep.as_array()
+            let probs = timestep
+                .as_array()
                 .ok_or_else(|| anyhow!("Timestep not an array"))?;
-            
+
             // Find argmax
-            let (max_idx, _) = probs.iter().enumerate()
+            let (max_idx, _) = probs
+                .iter()
+                .enumerate()
                 .map(|(i, v)| (i, v.as_f64().unwrap_or(f64::NEG_INFINITY)))
                 .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
                 .unwrap_or((0, 0.0));
-            
+
             // Skip if same as previous (collapse repeats)
             if Some(max_idx) == prev_idx {
                 continue;
             }
             prev_idx = Some(max_idx);
-            
+
             // Skip blank (index 0)
             if max_idx == 0 {
                 continue;
             }
-            
+
             // Map to character
             if let Some(ch) = self.ocr_dict.get(max_idx) {
                 result.push_str(ch);
             }
         }
-        
+
         Ok(result)
     }
 
@@ -335,19 +384,19 @@ impl WhiteboardPipeline {
                 | "diamond"
                 | "hexagon"
                 | "parallelogram"
-                | "sticky_note"
-                | "text_label"
+                | "triangle"
                 | "cloud"
                 | "cylinder"
-                | "square"
-                | "ellipse"
+                | "sticky_note"
+                | "text_label"
                 | "document_shape"
-                | "arrow_box"
+                | "ellipse"
+                | "square"
         )
     }
 
     fn analyze_connections(&self, shapes: &mut [DetectedShape], boxes: &[DetectedBox]) {
-        // Find arrow indices
+        // Find arrow indices and non-arrow shape indices
         let arrow_indices: Vec<usize> = boxes
             .iter()
             .enumerate()
@@ -365,7 +414,7 @@ impl WhiteboardPipeline {
         // For each arrow, find what it connects
         for arrow_idx in arrow_indices {
             let arrow = &boxes[arrow_idx];
-            
+
             // Arrow endpoints: start = left side, end = right side
             let (start_x, start_y) = (arrow.x, arrow.y + arrow.height / 2.0);
             let (end_x, end_y) = (arrow.x + arrow.width, arrow.y + arrow.height / 2.0);
@@ -375,7 +424,10 @@ impl WhiteboardPipeline {
 
             for &shape_idx in &non_arrow_indices {
                 let shape = &boxes[shape_idx];
-                let center = (shape.x + shape.width / 2.0, shape.y + shape.height / 2.0);
+                let center = (
+                    shape.x + shape.width / 2.0,
+                    shape.y + shape.height / 2.0,
+                );
 
                 let dist_to_start = Self::distance(start_x, start_y, center.0, center.1);
                 let dist_to_end = Self::distance(end_x, end_y, center.0, center.1);
@@ -384,7 +436,10 @@ impl WhiteboardPipeline {
                 let max_dist = 150.0;
 
                 if dist_to_start < max_dist {
-                    if closest_to_start.map(|(_, d)| dist_to_start < d).unwrap_or(true) {
+                    if closest_to_start
+                        .map(|(_, d)| dist_to_start < d)
+                        .unwrap_or(true)
+                    {
                         closest_to_start = Some((shape_idx, dist_to_start));
                     }
                 }
@@ -396,9 +451,13 @@ impl WhiteboardPipeline {
             }
 
             // Record connection: start_shape → end_shape
-            if let (Some((start_shape, _)), Some((end_shape, _))) = (closest_to_start, closest_to_end)
+            if let (Some((start_shape, _)), Some((end_shape, _))) =
+                (closest_to_start, closest_to_end)
             {
-                if start_shape != end_shape && start_shape < shapes.len() && end_shape < shapes.len() {
+                if start_shape != end_shape
+                    && start_shape < shapes.len()
+                    && end_shape < shapes.len()
+                {
                     shapes[start_shape].connects_to.push(end_shape);
                 }
             }
@@ -416,6 +475,8 @@ impl WhiteboardPipeline {
                 | "dotted_line"
                 | "curved_line"
                 | "curved_bidirectional_arrow"
+                | "line"
+                | "dashed_line"
         )
     }
 
@@ -425,7 +486,9 @@ impl WhiteboardPipeline {
 
     fn infer_diagram_type(&self, shapes: &[DetectedShape]) -> DiagramType {
         let has_diamonds = shapes.iter().any(|s| s.shape_type == "diamond");
-        let has_cylinders = shapes.iter().any(|s| s.shape_type == "cylinder" || s.shape_type == "database_icon");
+        let has_cylinders = shapes
+            .iter()
+            .any(|s| s.shape_type == "cylinder" || s.shape_type == "database_icon");
         let has_stick_figures = shapes.iter().any(|s| s.shape_type == "stick_figure");
         let has_ovals = shapes
             .iter()
@@ -444,7 +507,11 @@ impl WhiteboardPipeline {
         }
     }
 
-    fn generate_mermaid(&mut self, shapes: &[DetectedShape], diagram_type: &DiagramType) -> Result<String> {
+    fn generate_mermaid(
+        &mut self,
+        shapes: &[DetectedShape],
+        diagram_type: &DiagramType,
+    ) -> Result<String> {
         let prompt = self.build_prompt(shapes, diagram_type);
 
         let input = InferenceInput::Text { prompt };
@@ -513,7 +580,9 @@ impl WhiteboardPipeline {
         if let Some(start) = response.find("```mermaid") {
             let content_start = start + "```mermaid".len();
             if let Some(end) = response[content_start..].find("```") {
-                return response[content_start..content_start + end].trim().to_string();
+                return response[content_start..content_start + end]
+                    .trim()
+                    .to_string();
             }
         }
 
@@ -527,7 +596,9 @@ impl WhiteboardPipeline {
                 .unwrap_or(content_start);
 
             if let Some(end) = response[content_start..].find("```") {
-                return response[content_start..content_start + end].trim().to_string();
+                return response[content_start..content_start + end]
+                    .trim()
+                    .to_string();
             }
         }
 
@@ -538,6 +609,11 @@ impl WhiteboardPipeline {
     /// Swap LoRA adapter for different diagram styles
     pub fn swap_lora(&mut self, lora_path: &Path) -> Result<()> {
         self.runtime.swap_lora(&self.phi_model, lora_path)
+    }
+
+    /// Get dictionary statistics
+    pub fn dictionary_stats(&self) -> crate::dictionary::DictionaryStats {
+        self.dictionary.stats()
     }
 }
 
@@ -575,6 +651,7 @@ mod tests {
         assert!(WhiteboardPipeline::is_arrow("solid_arrow"));
         assert!(WhiteboardPipeline::is_arrow("dashed_arrow"));
         assert!(WhiteboardPipeline::is_arrow("dotted_line"));
+        assert!(WhiteboardPipeline::is_arrow("line"));
         assert!(!WhiteboardPipeline::is_arrow("rectangle"));
     }
 

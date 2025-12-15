@@ -1,0 +1,35 @@
+{
+  "version": "1.0",
+  "description": "Domain terms for whiteboard OCR correction",
+  "min_length": 3,
+  "max_distance_short": 1,
+  "max_distance_long": 2,
+  "terms": {
+    "flow_control": [
+      "START", "END", "STOP", "BEGIN", "FINISH",
+      "YES", "NO", "TRUE", "FALSE", "OK", "FAIL",
+      "IF", "ELSE", "THEN", "WHILE", "FOR", "LOOP"
+    ],
+    "actions": [
+      "PROCESS", "INPUT", "OUTPUT", "READ", "WRITE",
+      "SAVE", "LOAD", "DELETE", "UPDATE", "CREATE",
+      "SEND", "RECEIVE", "CALL", "RETURN", "EXIT",
+      "FROM", "TO", "INIT", "VALIDATE", "GET", "SET"
+    ],
+    "data": [
+      "DATA", "DATABASE", "DB", "CACHE", "STORAGE",
+      "FILE", "LOG", "CONFIG", "QUEUE", "STACK",
+      "TABLE", "ROW", "COLUMN", "INDEX", "KEY"
+    ],
+    "status": [
+      "ERROR", "VALID", "INVALID", "CHECK", "VERIFY",
+      "SUCCESS", "FAILURE", "RETRY", "TIMEOUT",
+      "PENDING", "DONE", "ACTIVE", "IDLE"
+    ],
+    "components": [
+      "USER", "ADMIN", "CLIENT", "SERVER", "API",
+      "SERVICE", "HANDLER", "CONTROLLER", "MODEL",
+      "VIEW", "ROUTER", "WORKER", "AGENT"
+    ]
+  }
+}

@@ -166,7 +166,7 @@ impl Runtime {
                 tracing::info!("Loaded OCR dictionary with {} chars", chars.len());
                 
                 // PaddleOCR rec uses height=32, variable width
-                (OnnxModelType::Recognition, None, Some(chars), 32, 320)
+                (OnnxModelType::Recognition, None, Some(chars), 48, 320)
             } else if classes_path.exists() {
                 // Detection model (YOLO)
                 let content = std::fs::read_to_string(&classes_path)?;
@@ -438,7 +438,7 @@ impl Runtime {
         let (orig_width, orig_height) = img.dimensions();
 
         // PaddleOCR rec expects: height=32, variable width (aspect ratio preserved)
-        let target_height = 32u32;
+        let target_height = model.input_height;
         let aspect = orig_width as f32 / orig_height as f32;
         let target_width = ((target_height as f32 * aspect).round() as u32).max(32).min(320);
 

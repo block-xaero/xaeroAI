@@ -16,7 +16,6 @@ mod correction;
 mod registry;
 mod dictionary;
 pub mod pipeline;
-
 pub use skill::{Skill, Capability, ModelKind, IOSchema, IOType};
 pub use runtime::{Runtime, InferenceInput, InferenceOutput, DetectedBox};
 pub use correction::{Correction, CorrectionInputType};
@@ -823,3 +822,5 @@ mod tests {
         assert!(json.contains("ModelLoaded"));
     }
 }
+
+pub mod arrow_detector;
