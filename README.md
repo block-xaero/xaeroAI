@@ -12,7 +12,7 @@ Whiteboard Photo → YOLO (shapes) → PaddleOCR (text) → Dictionary (correct)
 
 | Model | Purpose | Size | Format |
 |-------|---------|------|--------|
-| whiteboard-detector | Shape detection | 25MB | ONNX |
+| cyan-sketch | Shape detection | 25MB | ONNX |
 | paddleocr | Text recognition | 7.5MB | ONNX |
 | cyan-lens | Mermaid generation | 2GB | GGUF Q4 |
 
