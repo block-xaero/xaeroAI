@@ -1,11 +1,10 @@
 //! Model runtime - loading and inference for GGUF and ONNX models
 //!
 //! GGUF (Phi, Llama) via llama-cpp-2
-//! ONNX (YOLO, PaddleOCR) via ort
+//! ONNX (YOLO, PaddleOCR) via ort - macOS only
 
 use crate::skill::{ModelKind, Skill};
 use anyhow::{anyhow, Result};
-use image::GenericImageView;
 use llama_cpp_2::context::params::LlamaContextParams;
 use llama_cpp_2::llama_backend::LlamaBackend;
 use llama_cpp_2::llama_batch::LlamaBatch;
@@ -64,6 +63,7 @@ pub struct DetectedBox {
 /// Loaded model instance
 enum LoadedModel {
     Gguf(GgufModel),
+    #[cfg(target_os = "macos")]
     Onnx(OnnxModel),
 }
 
@@ -76,13 +76,15 @@ struct GgufModel {
 }
 
 /// ONNX model type
+#[cfg(target_os = "macos")]
 #[derive(Debug, Clone, PartialEq)]
 enum OnnxModelType {
     Detection,   // YOLO - outputs boxes
     Recognition, // OCR - outputs text/logits
 }
 
-/// ONNX model wrapper
+/// ONNX model wrapper - macOS only
+#[cfg(target_os = "macos")]
 struct OnnxModel {
     name: String,
     session: ort::session::Session,
@@ -122,7 +124,10 @@ impl Runtime {
 
         let loaded = match skill.kind {
             ModelKind::Gguf => self.load_gguf(&skill.name, &model_path)?,
+            #[cfg(target_os = "macos")]
             ModelKind::Onnx => self.load_onnx(&skill.name, &model_path, models_dir)?,
+            #[cfg(not(target_os = "macos"))]
+            ModelKind::Onnx => return Err(anyhow!("ONNX models not supported on this platform")),
             _ => return Err(anyhow!("Unsupported model kind: {:?}", skill.kind)),
         };
 
@@ -146,6 +151,7 @@ impl Runtime {
         }))
     }
 
+    #[cfg(target_os = "macos")]
     fn load_onnx(&mut self, name: &str, model_path: &Path, models_dir: &Path) -> Result<LoadedModel> {
         tracing::info!("Loading ONNX model: {:?}", model_path);
 
@@ -156,15 +162,15 @@ impl Runtime {
         // Detect model type based on files present
         let classes_path = models_dir.join("classes.txt");
         let dict_path = models_dir.join("dict.txt");
-        
-        let (model_type, class_names, char_dict, input_height, input_width) = 
+
+        let (model_type, class_names, char_dict, input_height, input_width) =
             if dict_path.exists() {
                 // OCR recognition model (PaddleOCR)
                 let content = std::fs::read_to_string(&dict_path)?;
                 let mut chars: Vec<String> = vec!["".to_string()]; // blank for CTC
                 chars.extend(content.lines().map(|s| s.to_string()));
                 tracing::info!("Loaded OCR dictionary with {} chars", chars.len());
-                
+
                 // PaddleOCR rec uses height=32, variable width
                 (OnnxModelType::Recognition, None, Some(chars), 48, 320)
             } else if classes_path.exists() {
@@ -172,7 +178,7 @@ impl Runtime {
                 let content = std::fs::read_to_string(&classes_path)?;
                 let classes: Vec<String> = content.lines().map(|s| s.trim().to_string()).collect();
                 tracing::info!("Loaded {} class names", classes.len());
-                
+
                 (OnnxModelType::Detection, Some(classes), None, 640, 640)
             } else {
                 // Default to detection
@@ -207,7 +213,7 @@ impl Runtime {
         match model {
             LoadedModel::Gguf(gguf) => {
                 tracing::info!("Swapping LoRA adapter: {:?}", lora_path);
-                
+
                 // Initialize LoRA adapter
                 let _adapter = gguf.model
                     .lora_adapter_init(lora_path)
@@ -216,6 +222,7 @@ impl Runtime {
                 gguf.active_lora = Some(lora_path.to_string_lossy().to_string());
                 Ok(())
             }
+            #[cfg(target_os = "macos")]
             LoadedModel::Onnx(_) => Err(anyhow!("Cannot apply LoRA to ONNX model")),
         }
     }
@@ -228,6 +235,7 @@ impl Runtime {
 
         match model {
             LoadedModel::Gguf(gguf) => Self::infer_gguf_static(gguf, input),
+            #[cfg(target_os = "macos")]
             LoadedModel::Onnx(onnx) => Self::infer_onnx_static(onnx, input),
         }
     }
@@ -244,7 +252,7 @@ impl Runtime {
         // Create context
         let ctx_params = LlamaContextParams::default()
             .with_n_ctx(NonZeroU32::new(2048));
-        
+
         let mut ctx = model
             .model
             .new_context(get_llama_backend(), ctx_params)
@@ -258,7 +266,7 @@ impl Runtime {
 
         // Create batch and add tokens
         let mut batch = LlamaBatch::new(2048, 1);
-        
+
         for (i, token) in tokens.iter().enumerate() {
             let is_last = i == tokens.len() - 1;
             batch.add(*token, i as i32, &[0], is_last)
@@ -310,6 +318,7 @@ impl Runtime {
         Ok(InferenceOutput::Text { content: output })
     }
 
+    #[cfg(target_os = "macos")]
     fn infer_onnx_static(model: &mut OnnxModel, input: InferenceInput) -> Result<InferenceOutput> {
         match (&model.model_type, input) {
             // Detection model (YOLO)
@@ -324,10 +333,12 @@ impl Runtime {
         }
     }
 
+    #[cfg(target_os = "macos")]
     /// YOLO detection inference
     fn infer_onnx_detection_static(model: &mut OnnxModel, data_base64: &str) -> Result<InferenceOutput> {
         use base64::Engine;
-        
+        use image::GenericImageView;
+
         // Decode base64 to bytes
         let image_bytes = base64::engine::general_purpose::STANDARD
             .decode(data_base64)?;
@@ -348,7 +359,7 @@ impl Runtime {
 
         // Create input tensor [1, 3, H, W] - CHW format, normalized
         let mut input_data = vec![0.0f32; 3 * model.input_height as usize * model.input_width as usize];
-        
+
         for y in 0..model.input_height as usize {
             for x in 0..model.input_width as usize {
                 let pixel = rgb.get_pixel(x as u32, y as u32);
@@ -375,7 +386,7 @@ impl Runtime {
         let num_classes = model.class_names.as_ref().map(|c| c.len()).unwrap_or(80);
         // Shape is [1, 4+num_classes, num_boxes] - convert i64 to usize
         let num_boxes = shape.get(2).map(|&x| x as usize).unwrap_or(8400);
-        
+
         for i in 0..num_boxes {
             let x_center = raw_data[0 * num_boxes + i];
             let y_center = raw_data[1 * num_boxes + i];
@@ -425,10 +436,12 @@ impl Runtime {
         Ok(InferenceOutput::Boxes { detections })
     }
 
+    #[cfg(target_os = "macos")]
     /// PaddleOCR recognition inference with CTC decode
     fn infer_onnx_recognition_static(model: &mut OnnxModel, data_base64: &str) -> Result<InferenceOutput> {
         use base64::Engine;
-        
+        use image::GenericImageView;
+
         // Decode base64 to bytes
         let image_bytes = base64::engine::general_purpose::STANDARD
             .decode(data_base64)?;
@@ -453,7 +466,7 @@ impl Runtime {
         // Create input tensor [1, 3, 32, W] with ImageNet normalization
         let mean = [0.485f32, 0.456, 0.406];
         let std = [0.229f32, 0.224, 0.225];
-        
+
         let mut input_data = vec![0.0f32; 3 * target_height as usize * target_width as usize];
 
         for y in 0..target_height as usize {

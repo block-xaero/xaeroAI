@@ -10,11 +10,11 @@
 #![allow(dead_code)]
 #![allow(clippy::too_many_arguments)]
 
-mod skill;
-mod runtime;
-mod correction;
-mod registry;
-mod dictionary;
+pub mod skill;
+pub mod runtime;
+pub mod correction;
+pub mod registry;
+pub mod dictionary;
 pub mod pipeline;
 pub use skill::{Skill, Capability, ModelKind, IOSchema, IOType};
 pub use runtime::{Runtime, InferenceInput, InferenceOutput, DetectedBox};
