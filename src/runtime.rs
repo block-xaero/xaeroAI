@@ -9,7 +9,7 @@ use llama_cpp_2::context::params::LlamaContextParams;
 use llama_cpp_2::llama_backend::LlamaBackend;
 use llama_cpp_2::llama_batch::LlamaBatch;
 use llama_cpp_2::model::params::LlamaModelParams;
-use llama_cpp_2::model::LlamaModel;
+use llama_cpp_2::model::{LlamaModel, Special};
 use llama_cpp_2::sampling::LlamaSampler;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -21,7 +21,11 @@ use std::sync::OnceLock;
 static LLAMA_BACKEND: OnceLock<LlamaBackend> = OnceLock::new();
 
 fn get_llama_backend() -> &'static LlamaBackend {
-    LLAMA_BACKEND.get_or_init(|| LlamaBackend::init().expect("Failed to init llama backend"))
+    LLAMA_BACKEND.get_or_init(|| {
+        eprintln!("🔧 [get_llama_backend] Initializing LlamaBackend...");
+        tracing::info!("🔍 Initializing LlamaBackend...");
+        LlamaBackend::init().expect("Failed to init llama backend")
+    })
 }
 
 /// Inference input (serializable for FFI)
@@ -102,8 +106,12 @@ pub struct Runtime {
 
 impl Runtime {
     pub fn new() -> Result<Self> {
+        eprintln!("🔧 [Runtime::new] Creating runtime...");
+        tracing::info!("🔍 Runtime::new() called");
         // Initialize llama backend
         let _ = get_llama_backend();
+        eprintln!("✅ [Runtime::new] LlamaBackend initialized");
+        tracing::info!("✅ LlamaBackend initialized");
 
         Ok(Self {
             models: HashMap::new(),
@@ -111,38 +119,90 @@ impl Runtime {
     }
 
     pub fn load_from_skill(&mut self, skill: &Skill, models_dir: &Path) -> Result<()> {
+        eprintln!("═══════════════════════════════════════════════════════════════");
+        eprintln!("🔧 [load_from_skill] skill.name={}, skill.kind={:?}", skill.name, skill.kind);
+        eprintln!("🔧 [load_from_skill] models_dir={:?}", models_dir);
+        tracing::info!("🔍 load_from_skill: skill.name={}, skill.kind={:?}", skill.name, skill.kind);
+        tracing::info!("🔍 models_dir={:?}", models_dir);
+
         let model_file = skill
             .model_file
             .as_ref()
             .ok_or_else(|| anyhow!("No model file specified in skill"))?;
 
+        eprintln!("🔧 [load_from_skill] model_file from skill: {}", model_file);
+        tracing::info!("🔍 model_file from skill: {}", model_file);
+
         let model_path = models_dir.join(model_file);
+        eprintln!("🔧 [load_from_skill] Full model_path: {:?}", model_path);
+        eprintln!("🔧 [load_from_skill] model_path.exists(): {}", model_path.exists());
+        tracing::info!("🔍 Full model_path: {:?}", model_path);
+        tracing::info!("🔍 model_path.exists(): {}", model_path.exists());
 
         if !model_path.exists() {
+            eprintln!("❌ [load_from_skill] Model file not found: {:?}", model_path);
+            tracing::error!("❌ Model file not found: {:?}", model_path);
             return Err(anyhow!("Model file not found: {:?}", model_path));
         }
 
+        // Log file size
+        if let Ok(metadata) = std::fs::metadata(&model_path) {
+            eprintln!("🔧 [load_from_skill] Model file size: {} bytes ({:.2} MB)",
+                metadata.len(), metadata.len() as f64 / 1_048_576.0);
+            tracing::info!("🔍 Model file size: {} bytes ({:.2} MB)",
+                metadata.len(), metadata.len() as f64 / 1_048_576.0);
+        }
+
+        eprintln!("🔧 [load_from_skill] Loading model of kind: {:?}", skill.kind);
+        tracing::info!("🔍 Loading model of kind: {:?}", skill.kind);
         let loaded = match skill.kind {
-            ModelKind::Gguf => self.load_gguf(&skill.name, &model_path)?,
+            ModelKind::Gguf => {
+                eprintln!("🔧 [load_from_skill] Calling load_gguf...");
+                tracing::info!("🔍 Calling load_gguf...");
+                self.load_gguf(&skill.name, &model_path)?
+            }
             #[cfg(target_os = "macos")]
-            ModelKind::Onnx => self.load_onnx(&skill.name, &model_path, models_dir)?,
+            ModelKind::Onnx => {
+                eprintln!("🔧 [load_from_skill] Calling load_onnx...");
+                tracing::info!("🔍 Calling load_onnx...");
+                self.load_onnx(&skill.name, &model_path, models_dir)?
+            }
             #[cfg(not(target_os = "macos"))]
             ModelKind::Onnx => return Err(anyhow!("ONNX models not supported on this platform")),
             _ => return Err(anyhow!("Unsupported model kind: {:?}", skill.kind)),
         };
 
         self.models.insert(skill.name.clone(), loaded);
-        tracing::info!("Loaded model: {}", skill.name);
+        eprintln!("✅ [load_from_skill] Model loaded and inserted: {}", skill.name);
+        eprintln!("🔧 [load_from_skill] Total loaded models: {}", self.models.len());
+        tracing::info!("✅ Model loaded and inserted: {}", skill.name);
+        tracing::info!("🔍 Total loaded models: {}", self.models.len());
 
         Ok(())
     }
 
     fn load_gguf(&mut self, name: &str, model_path: &Path) -> Result<LoadedModel> {
-        tracing::info!("Loading GGUF model: {:?}", model_path);
+        eprintln!("🔧 [load_gguf] name={}, path={:?}", name, model_path);
+        tracing::info!("🔍 load_gguf: name={}, path={:?}", name, model_path);
 
         let params = LlamaModelParams::default();
+        eprintln!("🔧 [load_gguf] Created LlamaModelParams (default)");
+        tracing::info!("🔍 Created LlamaModelParams (default)");
+
+        eprintln!("🔧 [load_gguf] Loading GGUF model from file (this may take a while)...");
+        tracing::info!("🔍 Loading GGUF model from file (this may take a while for large models)...");
+        let start = std::time::Instant::now();
+
         let model = LlamaModel::load_from_file(get_llama_backend(), model_path, &params)
-            .map_err(|e| anyhow!("Failed to load GGUF model: {:?}", e))?;
+            .map_err(|e| {
+                eprintln!("❌ [load_gguf] Failed to load GGUF model: {:?}", e);
+                tracing::error!("❌ Failed to load GGUF model: {:?}", e);
+                anyhow!("Failed to load GGUF model: {:?}", e)
+            })?;
+
+        let elapsed = start.elapsed();
+        eprintln!("✅ [load_gguf] GGUF model loaded in {:?}", elapsed);
+        tracing::info!("✅ GGUF model loaded in {:?}", elapsed);
 
         Ok(LoadedModel::Gguf(GgufModel {
             name: name.to_string(),
@@ -153,7 +213,8 @@ impl Runtime {
 
     #[cfg(target_os = "macos")]
     fn load_onnx(&mut self, name: &str, model_path: &Path, models_dir: &Path) -> Result<LoadedModel> {
-        tracing::info!("Loading ONNX model: {:?}", model_path);
+        eprintln!("🔧 [load_onnx] name={}, path={:?}", name, model_path);
+        tracing::info!("🔍 load_onnx: name={}, path={:?}", name, model_path);
 
         let session = ort::session::Session::builder()?
             .with_optimization_level(ort::session::builder::GraphOptimizationLevel::Level3)?
@@ -169,6 +230,7 @@ impl Runtime {
                 let content = std::fs::read_to_string(&dict_path)?;
                 let mut chars: Vec<String> = vec!["".to_string()]; // blank for CTC
                 chars.extend(content.lines().map(|s| s.to_string()));
+                eprintln!("🔧 [load_onnx] Loaded OCR dictionary with {} chars", chars.len());
                 tracing::info!("Loaded OCR dictionary with {} chars", chars.len());
 
                 // PaddleOCR rec uses height=32, variable width
@@ -177,6 +239,7 @@ impl Runtime {
                 // Detection model (YOLO)
                 let content = std::fs::read_to_string(&classes_path)?;
                 let classes: Vec<String> = content.lines().map(|s| s.trim().to_string()).collect();
+                eprintln!("🔧 [load_onnx] Loaded {} class names", classes.len());
                 tracing::info!("Loaded {} class names", classes.len());
 
                 (OnnxModelType::Detection, Some(classes), None, 640, 640)
@@ -197,14 +260,17 @@ impl Runtime {
     }
 
     pub fn unload(&mut self, model_id: &str) -> Result<()> {
+        eprintln!("🔧 [unload] model_id={}", model_id);
         self.models
             .remove(model_id)
             .ok_or_else(|| anyhow!("Model not loaded: {}", model_id))?;
+        eprintln!("✅ [unload] Unloaded model: {}", model_id);
         tracing::info!("Unloaded model: {}", model_id);
         Ok(())
     }
 
     pub fn swap_lora(&mut self, base_model_id: &str, lora_path: &Path) -> Result<()> {
+        eprintln!("🔧 [swap_lora] base_model_id={}, lora_path={:?}", base_model_id, lora_path);
         let model = self
             .models
             .get_mut(base_model_id)
@@ -212,6 +278,7 @@ impl Runtime {
 
         match model {
             LoadedModel::Gguf(gguf) => {
+                eprintln!("🔧 [swap_lora] Swapping LoRA adapter: {:?}", lora_path);
                 tracing::info!("Swapping LoRA adapter: {:?}", lora_path);
 
                 // Initialize LoRA adapter
@@ -228,43 +295,106 @@ impl Runtime {
     }
 
     pub fn infer_sync(&mut self, model_id: &str, input: InferenceInput) -> Result<InferenceOutput> {
+        eprintln!("═══════════════════════════════════════════════════════════════");
+        eprintln!("🧠 [infer_sync] STARTING INFERENCE");
+        eprintln!("═══════════════════════════════════════════════════════════════");
+        eprintln!("🧠 [infer_sync] model_id={}", model_id);
+        eprintln!("🧠 [infer_sync] Available models: {:?}", self.models.keys().collect::<Vec<_>>());
+        tracing::info!("🔍 infer_sync: model_id={}", model_id);
+        tracing::info!("🔍 Available models: {:?}", self.models.keys().collect::<Vec<_>>());
+
         let model = self
             .models
             .get_mut(model_id)
-            .ok_or_else(|| anyhow!("Model not loaded: {}", model_id))?;
+            .ok_or_else(|| {
+                eprintln!("❌ [infer_sync] Model not loaded: {}", model_id);
+                tracing::error!("❌ Model not loaded: {}", model_id);
+                anyhow!("Model not loaded: {}", model_id)
+            })?;
+
+        eprintln!("✅ [infer_sync] Found model, running inference...");
+        tracing::info!("🔍 Found model, running inference...");
 
         match model {
-            LoadedModel::Gguf(gguf) => Self::infer_gguf_static(gguf, input),
+            LoadedModel::Gguf(gguf) => {
+                eprintln!("🧠 [infer_sync] Calling infer_gguf_static for model: {}", gguf.name);
+                tracing::info!("🔍 Calling infer_gguf_static for model: {}", gguf.name);
+                Self::infer_gguf_static(gguf, input)
+            }
             #[cfg(target_os = "macos")]
-            LoadedModel::Onnx(onnx) => Self::infer_onnx_static(onnx, input),
+            LoadedModel::Onnx(onnx) => {
+                eprintln!("🧠 [infer_sync] Calling infer_onnx_static for model: {}", onnx.name);
+                tracing::info!("🔍 Calling infer_onnx_static for model: {}", onnx.name);
+                Self::infer_onnx_static(onnx, input)
+            }
         }
     }
 
     fn infer_gguf_static(model: &GgufModel, input: InferenceInput) -> Result<InferenceOutput> {
+        eprintln!("═══════════════════════════════════════════════════════════════");
+        eprintln!("🚀 [infer_gguf_static] STARTING GGUF INFERENCE");
+        eprintln!("═══════════════════════════════════════════════════════════════");
+        eprintln!("🚀 [infer_gguf_static] model.name={}", model.name);
+        tracing::info!("🔍 infer_gguf_static: model.name={}", model.name);
+
         let prompt = match input {
-            InferenceInput::Text { prompt } => prompt,
-            InferenceInput::Json { data } => serde_json::to_string(&data)?,
+            InferenceInput::Text { prompt } => {
+                eprintln!("🚀 [infer_gguf_static] Input type: Text, prompt length: {} chars", prompt.len());
+                eprintln!("🚀 [infer_gguf_static] Prompt preview: {}...", &prompt[..prompt.len().min(300)]);
+                tracing::info!("🔍 Input type: Text, prompt length: {} chars", prompt.len());
+                prompt
+            }
+            InferenceInput::Json { data } => {
+                eprintln!("🚀 [infer_gguf_static] Input type: Json");
+                tracing::info!("🔍 Input type: Json");
+                serde_json::to_string(&data)?
+            }
             InferenceInput::Image { .. } => {
+                eprintln!("❌ [infer_gguf_static] GGUF models don't support image input");
+                tracing::error!("❌ GGUF models don't support image input");
                 return Err(anyhow!("GGUF models don't support image input"));
             }
         };
 
         // Create context
+        eprintln!("🚀 [infer_gguf_static] Creating LlamaContext with n_ctx=2048...");
+        tracing::info!("🔍 Creating LlamaContext with n_ctx=2048...");
         let ctx_params = LlamaContextParams::default()
             .with_n_ctx(NonZeroU32::new(2048));
 
+        let start_ctx = std::time::Instant::now();
         let mut ctx = model
             .model
             .new_context(get_llama_backend(), ctx_params)
-            .map_err(|e| anyhow!("Failed to create context: {:?}", e))?;
+            .map_err(|e| {
+                eprintln!("❌ [infer_gguf_static] Failed to create context: {:?}", e);
+                tracing::error!("❌ Failed to create context: {:?}", e);
+                anyhow!("Failed to create context: {:?}", e)
+            })?;
+        eprintln!("✅ [infer_gguf_static] Context created in {:?}", start_ctx.elapsed());
+        tracing::info!("✅ Context created in {:?}", start_ctx.elapsed());
 
         // Tokenize input
+        eprintln!("🚀 [infer_gguf_static] Tokenizing input...");
+        tracing::info!("🔍 Tokenizing input...");
+        let start_tok = std::time::Instant::now();
         let tokens = model
             .model
             .str_to_token(&prompt, llama_cpp_2::model::AddBos::Always)
-            .map_err(|e| anyhow!("Tokenization failed: {:?}", e))?;
+            .map_err(|e| {
+                eprintln!("❌ [infer_gguf_static] Tokenization failed: {:?}", e);
+                tracing::error!("❌ Tokenization failed: {:?}", e);
+                anyhow!("Tokenization failed: {:?}", e)
+            })?;
+        eprintln!("✅ [infer_gguf_static] Tokenized {} tokens in {:?}", tokens.len(), start_tok.elapsed());
+        if tokens.len() > 10 {
+            eprintln!("🚀 [infer_gguf_static] First 10 token IDs: {:?}", &tokens[..10].iter().map(|t| t.0).collect::<Vec<_>>());
+        }
+        tracing::info!("✅ Tokenized {} tokens in {:?}", tokens.len(), start_tok.elapsed());
 
         // Create batch and add tokens
+        eprintln!("🚀 [infer_gguf_static] Creating batch and adding {} tokens...", tokens.len());
+        tracing::info!("🔍 Creating batch and adding tokens...");
         let mut batch = LlamaBatch::new(2048, 1);
 
         for (i, token) in tokens.iter().enumerate() {
@@ -272,28 +402,59 @@ impl Runtime {
             batch.add(*token, i as i32, &[0], is_last)
                 .map_err(|e| anyhow!("Failed to add token to batch: {:?}", e))?;
         }
+        eprintln!("✅ [infer_gguf_static] Batch created with {} tokens", batch.n_tokens());
 
         // Decode the batch
+        eprintln!("🚀 [infer_gguf_static] Decoding initial batch (prompt processing)...");
+        tracing::info!("🔍 Decoding initial batch...");
+        let start_decode = std::time::Instant::now();
         ctx.decode(&mut batch)
-            .map_err(|e| anyhow!("Decode failed: {:?}", e))?;
+            .map_err(|e| {
+                eprintln!("❌ [infer_gguf_static] Decode failed: {:?}", e);
+                tracing::error!("❌ Decode failed: {:?}", e);
+                anyhow!("Decode failed: {:?}", e)
+            })?;
+        eprintln!("✅ [infer_gguf_static] Initial decode in {:?}", start_decode.elapsed());
+        tracing::info!("✅ Initial decode in {:?}", start_decode.elapsed());
 
         // Create sampler chain for temperature sampling
+        eprintln!("🚀 [infer_gguf_static] Creating sampler chain (temp=0.7, seed=42)...");
+        tracing::info!("🔍 Creating sampler chain...");
         let mut sampler = LlamaSampler::chain_simple([
             LlamaSampler::temp(0.7),
             LlamaSampler::dist(42), // seed
         ]);
 
         // Generate tokens
+        eprintln!("═══════════════════════════════════════════════════════════════");
+        eprintln!("🔄 [infer_gguf_static] STARTING TOKEN GENERATION (max 512 tokens)");
+        eprintln!("═══════════════════════════════════════════════════════════════");
+        tracing::info!("🔍 Starting token generation (max 512 tokens)...");
+        let start_gen = std::time::Instant::now();
         let mut output_tokens = Vec::new();
         let max_tokens = 512;
         let mut n_cur = tokens.len();
 
-        for _ in 0..max_tokens {
+        for i in 0..max_tokens {
             // Sample next token
             let new_token = sampler.sample(&ctx, batch.n_tokens() - 1);
 
-            // Check for EOS
-            if model.model.is_eog_token(new_token) {
+            // Check for EOS FIRST
+            let is_eog = model.model.is_eog_token(new_token);
+
+            // Try to decode the token to text for logging
+            let piece_result = model.model.token_to_str(new_token,Special::Plaintext);
+            let piece_display = match &piece_result {
+                Ok(s) => format!("'{}'", s.escape_debug()),
+                Err(e) => format!("<decode error: {:?}>", e),
+            };
+
+            eprintln!(">>> Token {:3}: id={:5}, eog={:5}, piece={}",
+                i, new_token.0, is_eog, piece_display);
+
+            if is_eog {
+                eprintln!("🛑 [infer_gguf_static] EOS token encountered at position {}", i);
+                tracing::info!("🔍 EOS token encountered at position {}", i);
                 break;
             }
 
@@ -307,19 +468,56 @@ impl Runtime {
 
             ctx.decode(&mut batch)
                 .map_err(|e| anyhow!("Decode failed: {:?}", e))?;
+
+            // Log progress every 50 tokens
+            if (i + 1) % 50 == 0 {
+                eprintln!("🔄 [infer_gguf_static] Generated {} tokens so far...", i + 1);
+                tracing::debug!("🔍 Generated {} tokens...", i + 1);
+            }
         }
 
+        let gen_elapsed = start_gen.elapsed();
+        let tokens_per_sec = output_tokens.len() as f64 / gen_elapsed.as_secs_f64();
+        eprintln!("═══════════════════════════════════════════════════════════════");
+        eprintln!("✅ [infer_gguf_static] GENERATION COMPLETE");
+        eprintln!("═══════════════════════════════════════════════════════════════");
+        eprintln!("📊 [infer_gguf_static] Generated {} tokens in {:?}", output_tokens.len(), gen_elapsed);
+        eprintln!("📊 [infer_gguf_static] Speed: {:.1} tokens/sec", tokens_per_sec);
+        tracing::info!("✅ Generated {} tokens in {:?}", output_tokens.len(), gen_elapsed);
+
         // Convert tokens to string
-        let output = output_tokens
-            .iter()
-            .filter_map(|t| model.model.token_to_str(*t, llama_cpp_2::model::Special::Tokenize).ok())
-            .collect::<String>();
+        eprintln!("🚀 [infer_gguf_static] Converting {} tokens to string...", output_tokens.len());
+        tracing::info!("🔍 Converting tokens to string...");
+
+        let mut output = String::new();
+        for (i, t) in output_tokens.iter().enumerate() {
+            match model.model.token_to_str(*t, Special::Plaintext) {
+                Ok(piece) => {
+                    output.push_str(&piece);
+                }
+                Err(e) => {
+                    eprintln!("⚠️ [infer_gguf_static] Token {} (id={}) decode error: {:?}", i, t.0, e);
+                }
+            }
+        }
+
+        eprintln!("═══════════════════════════════════════════════════════════════");
+        eprintln!("✅ [infer_gguf_static] INFERENCE RESULT");
+        eprintln!("═══════════════════════════════════════════════════════════════");
+        eprintln!("📄 [infer_gguf_static] Output length: {} chars", output.len());
+        eprintln!("📄 [infer_gguf_static] Output preview: '{}'", &output[..output.len().min(500)]);
+        tracing::info!("✅ Output: {} chars", output.len());
+
+        if output.is_empty() {
+            eprintln!("⚠️ [infer_gguf_static] WARNING: Empty output!");
+        }
 
         Ok(InferenceOutput::Text { content: output })
     }
 
     #[cfg(target_os = "macos")]
     fn infer_onnx_static(model: &mut OnnxModel, input: InferenceInput) -> Result<InferenceOutput> {
+        eprintln!("🔧 [infer_onnx_static] model_type={:?}", model.model_type);
         match (&model.model_type, input) {
             // Detection model (YOLO)
             (OnnxModelType::Detection, InferenceInput::Image { data_base64 }) => {
