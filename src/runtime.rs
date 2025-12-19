@@ -155,7 +155,9 @@ impl Runtime {
 
         eprintln!("🔧 [load_from_skill] Loading model of kind: {:?}", skill.kind);
         tracing::info!("🔍 Loading model of kind: {:?}", skill.kind);
-        let loaded = match skill.kind {
+        let model_kind = skill.kind.as_ref()
+            .ok_or_else(|| anyhow!("Model kind not specified in skill"))?;
+        let loaded = match model_kind {
             ModelKind::Gguf => {
                 eprintln!("🔧 [load_from_skill] Calling load_gguf...");
                 tracing::info!("🔍 Calling load_gguf...");

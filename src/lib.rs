@@ -1,10 +1,13 @@
 //! xaeroai - AI runtime for Cyan
 //!
-//! Two-actor architecture matching cyan-backend:
-//! - CommandActor: handles FFI commands (load model, infer, correct)
-//! - NetworkActor: handles P2P sync via Iroh (corrections, model discovery)
+//! Components:
+//! - skill: SKILL.md parsing (Agent Skills format)
+//! - playbook: ACE-style bullets with SQLite + FTS5
+//! - lens: CyanLens search with SQL generation
+//! - runtime: GGUF/ONNX model loading & inference
+//! - pipeline: Whiteboard → Mermaid conversion
 //!
-//! Storage: SQLite (model_registry, corrections tables)
+//! Storage: SQLite (model_registry, corrections, playbook_bullets)
 //! Runtime: GGUF (llama-cpp), ONNX (ort)
 
 #![allow(dead_code)]
@@ -16,12 +19,18 @@ pub mod correction;
 pub mod registry;
 pub mod dictionary;
 pub mod pipeline;
-pub use skill::{Skill, Capability, ModelKind, IOSchema, IOType};
+pub mod playbook;
+pub mod lens;
+pub mod arrow_detector;
+
+pub use skill::{Skill, ModelKind, IOSchema, IOType, Capability, InlineTool};
 pub use runtime::{Runtime, InferenceInput, InferenceOutput, DetectedBox};
 pub use correction::{Correction, CorrectionInputType};
 pub use registry::{ModelRecord, ModelRegistry};
 pub use dictionary::{Dictionary, DictionaryBuilder, DomainSource};
 pub use pipeline::{WhiteboardPipeline, PipelineResult, DetectedShape, BoundingBox, DiagramType};
+pub use playbook::{Bullet, Section, FeedbackTag, PlaybookStats};
+pub use lens::{CyanLens, LensResponse, LensFeedback, SearchResult};
 
 use anyhow::Result;
 use once_cell::sync::OnceCell;
@@ -43,36 +52,60 @@ static AI_SYSTEM: OnceCell<Arc<AISystem>> = OnceCell::new();
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum AICommand {
-    /// Register a model from a board's file
+    // === Model Management ===
     RegisterModel {
         board_id: String,
         file_id: String,
         skill_md: String,
     },
-    /// Unregister a model
-    UnregisterModel {
-        model_id: String,
-    },
-    /// Load model into memory for inference
-    LoadModel {
-        model_id: String,
-    },
-    /// Unload model from memory
-    UnloadModel {
-        model_id: String,
-    },
-    /// Run inference
+    UnregisterModel { model_id: String },
+    LoadModel { model_id: String },
+    UnloadModel { model_id: String },
+    ListModels { board_id: String },
+    ListLoadedModels,
+
+    // === Inference ===
     Infer {
         request_id: String,
         model_id: String,
         input_json: String,
     },
-    /// Swap LoRA adapter
     SwapLora {
         base_model_id: String,
         lora_model_id: String,
     },
-    /// Log a user correction
+    ProcessWhiteboard {
+        request_id: String,
+        image_hash: String,
+    },
+
+    // === CyanLens Search ===
+    LensSearch {
+        request_id: String,
+        query: String,
+    },
+    LensFeedback {
+        request_id: String,
+        was_helpful: bool,
+        bullet_feedback: Vec<BulletFeedbackInput>,
+        correction: Option<LensCorrectionInput>,
+    },
+
+    // === Playbook Management ===
+    PlaybookAdd {
+        scope: String,
+        section: String,
+        content: String,
+    },
+    PlaybookFeedback {
+        bullet_id: String,
+        tag: String,
+    },
+    PlaybookStats { scope: String },
+    PlaybookList { scope: String },
+    PlaybookDelete { bullet_id: String },
+
+    // === Corrections ===
     LogCorrection {
         model_id: String,
         input_type: String,
@@ -80,36 +113,29 @@ pub enum AICommand {
         original: String,
         corrected: String,
     },
-    /// List models for a board
-    ListModels {
-        board_id: String,
-    },
-    /// List all loaded models
-    ListLoadedModels,
-    /// Run whiteboard pipeline (YOLO → TrOCR → Phi)
-    ProcessWhiteboard {
-        request_id: String,
-        image_hash: String,
-    },
-    /// Get pending corrections (for XaeroFlux sync)
-    GetPendingCorrections {
-        limit: u32,
-    },
-    /// Mark corrections as synced
-    MarkCorrectionsSynced {
-        correction_ids: Vec<String>,
-    },
-    /// Mark corrections as drained (incorporated into training)
-    MarkCorrectionsDrained {
-        correction_ids: Vec<String>,
-    },
+    GetPendingCorrections { limit: u32 },
+    MarkCorrectionsSynced { correction_ids: Vec<String> },
+    MarkCorrectionsDrained { correction_ids: Vec<String> },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BulletFeedbackInput {
+    pub bullet_id: String,
+    pub tag: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LensCorrectionInput {
+    pub wrong_sql: String,
+    pub correct_sql: Option<String>,
+    pub explanation: String,
 }
 
 // ---------- Events (Rust → Swift) ----------
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum AIEvent {
-    /// Model registered in registry
+    // === Model Events ===
     ModelRegistered {
         model_id: String,
         board_id: String,
@@ -118,53 +144,21 @@ pub enum AIEvent {
         kind: String,
         capabilities: Vec<String>,
     },
-    /// Model unregistered
-    ModelUnregistered {
-        model_id: String,
-        board_id: String,
-    },
-    /// Model loaded into memory
-    ModelLoaded {
-        model_id: String,
-        name: String,
-    },
-    /// Model unloaded from memory
-    ModelUnloaded {
-        model_id: String,
-    },
-    /// Inference completed
+    ModelUnregistered { model_id: String, board_id: String },
+    ModelLoaded { model_id: String, name: String },
+    ModelUnloaded { model_id: String },
+    ModelsList { board_id: String, models: Vec<ModelInfo> },
+    LoadedModelsList { models: Vec<String> },
+
+    // === Inference Events ===
     InferenceComplete {
         request_id: String,
         model_id: String,
         output_json: String,
         latency_ms: u64,
     },
-    /// Inference failed
-    InferenceError {
-        request_id: String,
-        model_id: String,
-        error: String,
-    },
-    /// LoRA swapped
-    LoraSwapped {
-        base_model_id: String,
-        lora_model_id: String,
-    },
-    /// Correction saved
-    CorrectionSaved {
-        correction_id: String,
-        model_id: String,
-    },
-    /// Models list response
-    ModelsList {
-        board_id: String,
-        models: Vec<ModelInfo>,
-    },
-    /// Loaded models list response
-    LoadedModelsList {
-        models: Vec<String>,
-    },
-    /// Whiteboard pipeline complete
+    InferenceError { request_id: String, model_id: String, error: String },
+    LoraSwapped { base_model_id: String, lora_model_id: String },
     WhiteboardProcessed {
         request_id: String,
         mermaid: String,
@@ -172,20 +166,38 @@ pub enum AIEvent {
         shape_count: u32,
         latency_ms: u64,
     },
-    /// Whiteboard pipeline error
-    WhiteboardError {
+    WhiteboardError { request_id: String, error: String },
+
+    // === CyanLens Events ===
+    LensSearchComplete {
         request_id: String,
-        error: String,
+        query: String,
+        generated_sql: Option<String>,
+        results: Vec<SearchResultEvent>,
+        playbook_bullets_used: Vec<String>,
+        latency_ms: u64,
     },
-    /// Pending corrections response
-    PendingCorrections {
-        corrections: Vec<CorrectionInfo>,
+    LensSearchError { request_id: String, error: String },
+    LensFeedbackRecorded { request_id: String, new_bullet_id: Option<String> },
+
+    // === Playbook Events ===
+    PlaybookBulletAdded { bullet_id: String, scope: String, section: String },
+    PlaybookFeedbackRecorded { bullet_id: String },
+    PlaybookStatsResult {
+        scope: String,
+        total_bullets: usize,
+        by_section: std::collections::HashMap<String, usize>,
+        avg_score: f64,
     },
-    /// Error event
-    Error {
-        command: String,
-        error: String,
-    },
+    PlaybookListResult { scope: String, bullets: Vec<BulletInfo> },
+    PlaybookBulletDeleted { bullet_id: String },
+
+    // === Correction Events ===
+    CorrectionSaved { correction_id: String, model_id: String },
+    PendingCorrections { corrections: Vec<CorrectionInfo> },
+
+    // === Error ===
+    Error { command: String, error: String },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -209,11 +221,29 @@ pub struct CorrectionInfo {
     pub timestamp: i64,
 }
 
-// ---------- Network Events (for cyan-backend to broadcast) ----------
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SearchResultEvent {
+    pub id: String,
+    pub name: String,
+    pub result_type: String,
+    pub snippet: Option<String>,
+    pub deep_link: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BulletInfo {
+    pub id: String,
+    pub section: String,
+    pub content: String,
+    pub helpful_count: u32,
+    pub harmful_count: u32,
+    pub score: f32,
+}
+
+// ---------- Network Events (P2P broadcast) ----------
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum AINetworkEvent {
-    /// Broadcast when model registered (for peer discovery)
     ModelRegistered {
         model_id: String,
         board_id: String,
@@ -224,12 +254,7 @@ pub enum AINetworkEvent {
         model_hash: String,
         author: String,
     },
-    /// Broadcast when model unregistered
-    ModelUnregistered {
-        model_id: String,
-        board_id: String,
-    },
-    /// Broadcast when correction logged (for XaeroFlux collection)
+    ModelUnregistered { model_id: String, board_id: String },
     CorrectionLogged {
         correction_id: String,
         model_id: String,
@@ -241,135 +266,147 @@ pub enum AINetworkEvent {
         user_id: String,
         timestamp: i64,
     },
+    PlaybookBulletShared {
+        bullet_id: String,
+        scope: String,
+        section: String,
+        content: String,
+        user_id: String,
+    },
 }
 
 // ---------- AI System ----------
 pub struct AISystem {
     db: Mutex<Connection>,
+    cyan_db_path: PathBuf,
     runtime: Mutex<Runtime>,
+    lens: CyanLens,
+    lens_model_id: Mutex<Option<String>>,
     event_queue: Mutex<VecDeque<AIEvent>>,
     network_event_queue: Mutex<VecDeque<AINetworkEvent>>,
-    command_tx: mpsc::UnboundedSender<AICommand>,
+    _command_tx: mpsc::UnboundedSender<AICommand>,
     models_dir: PathBuf,
     user_id: String,
 }
 
 impl AISystem {
-    fn new(db_path: &str, models_dir: &str, user_id: &str) -> Result<Self> {
+    fn new(db_path: &str, cyan_db_path: &str, models_dir: &str, user_id: &str) -> Result<Self> {
         let db = Connection::open(db_path)?;
-        
+
         // Initialize tables
         registry::init_table(&db)?;
         correction::init_table(&db)?;
-        
+        playbook::init_tables(&db)?;
+
         let runtime = Runtime::new()?;
         let (command_tx, _command_rx) = mpsc::unbounded_channel();
-        
+        let lens = CyanLens::new("cyan-lens");
+
         Ok(Self {
             db: Mutex::new(db),
+            cyan_db_path: PathBuf::from(cyan_db_path),
             runtime: Mutex::new(runtime),
+            lens,
+            lens_model_id: Mutex::new(None),
             event_queue: Mutex::new(VecDeque::new()),
             network_event_queue: Mutex::new(VecDeque::new()),
-            command_tx,
+            _command_tx: command_tx,
             models_dir: PathBuf::from(models_dir),
             user_id: user_id.to_string(),
         })
     }
 
     fn push_event(&self, event: AIEvent) {
-        let mut queue = self.event_queue.lock().unwrap();
-        queue.push_back(event);
-    }
-
-    fn push_network_event(&self, event: AINetworkEvent) {
-        let mut queue = self.network_event_queue.lock().unwrap();
-        queue.push_back(event);
+        self.event_queue.lock().unwrap().push_back(event);
     }
 
     fn pop_event(&self) -> Option<AIEvent> {
-        let mut queue = self.event_queue.lock().unwrap();
-        queue.pop_front()
+        self.event_queue.lock().unwrap().pop_front()
+    }
+
+    fn push_network_event(&self, event: AINetworkEvent) {
+        self.network_event_queue.lock().unwrap().push_back(event);
     }
 
     fn pop_network_event(&self) -> Option<AINetworkEvent> {
-        let mut queue = self.network_event_queue.lock().unwrap();
-        queue.pop_front()
+        self.network_event_queue.lock().unwrap().pop_front()
     }
 
-    fn handle_command(&self, cmd: AICommand) {
+    pub fn handle_command(&self, cmd: AICommand) {
         match cmd {
-            AICommand::RegisterModel { board_id, file_id, skill_md } => {
-                self.handle_register_model(board_id, file_id, skill_md);
-            }
-            AICommand::UnregisterModel { model_id } => {
-                self.handle_unregister_model(model_id);
-            }
-            AICommand::LoadModel { model_id } => {
-                self.handle_load_model(model_id);
-            }
-            AICommand::UnloadModel { model_id } => {
-                self.handle_unload_model(model_id);
-            }
-            AICommand::Infer { request_id, model_id, input_json } => {
-                self.handle_infer(request_id, model_id, input_json);
-            }
-            AICommand::SwapLora { base_model_id, lora_model_id } => {
-                self.handle_swap_lora(base_model_id, lora_model_id);
-            }
-            AICommand::LogCorrection { model_id, input_type, input_data, original, corrected } => {
-                self.handle_log_correction(model_id, input_type, input_data, original, corrected);
-            }
-            AICommand::ListModels { board_id } => {
-                self.handle_list_models(board_id);
-            }
-            AICommand::ListLoadedModels => {
-                self.handle_list_loaded_models();
-            }
-            AICommand::GetPendingCorrections { limit } => {
-                self.handle_get_pending_corrections(limit);
-            }
-            AICommand::MarkCorrectionsSynced { correction_ids } => {
-                self.handle_mark_corrections_synced(correction_ids);
-            }
-            AICommand::MarkCorrectionsDrained { correction_ids } => {
-                self.handle_mark_corrections_drained(correction_ids);
-            }
-            AICommand::ProcessWhiteboard { request_id, image_hash } => {
-                self.handle_process_whiteboard(request_id, image_hash);
-            }
+            AICommand::RegisterModel { board_id, file_id, skill_md } =>
+                self.handle_register_model(board_id, file_id, skill_md),
+            AICommand::UnregisterModel { model_id } =>
+                self.handle_unregister_model(model_id),
+            AICommand::LoadModel { model_id } =>
+                self.handle_load_model(model_id),
+            AICommand::UnloadModel { model_id } =>
+                self.handle_unload_model(model_id),
+            AICommand::ListModels { board_id } =>
+                self.handle_list_models(board_id),
+            AICommand::ListLoadedModels =>
+                self.handle_list_loaded_models(),
+            AICommand::Infer { request_id, model_id, input_json } =>
+                self.handle_infer(request_id, model_id, input_json),
+            AICommand::SwapLora { base_model_id, lora_model_id } =>
+                self.handle_swap_lora(base_model_id, lora_model_id),
+            AICommand::ProcessWhiteboard { request_id, image_hash } =>
+                self.handle_process_whiteboard(request_id, image_hash),
+            AICommand::LensSearch { request_id, query } =>
+                self.handle_lens_search(request_id, query),
+            AICommand::LensFeedback { request_id, was_helpful, bullet_feedback, correction } =>
+                self.handle_lens_feedback(request_id, was_helpful, bullet_feedback, correction),
+            AICommand::PlaybookAdd { scope, section, content } =>
+                self.handle_playbook_add(scope, section, content),
+            AICommand::PlaybookFeedback { bullet_id, tag } =>
+                self.handle_playbook_feedback(bullet_id, tag),
+            AICommand::PlaybookStats { scope } =>
+                self.handle_playbook_stats(scope),
+            AICommand::PlaybookList { scope } =>
+                self.handle_playbook_list(scope),
+            AICommand::PlaybookDelete { bullet_id } =>
+                self.handle_playbook_delete(bullet_id),
+            AICommand::LogCorrection { model_id, input_type, input_data, original, corrected } =>
+                self.handle_log_correction(model_id, input_type, input_data, original, corrected),
+            AICommand::GetPendingCorrections { limit } =>
+                self.handle_get_pending_corrections(limit),
+            AICommand::MarkCorrectionsSynced { correction_ids } =>
+                self.handle_mark_corrections_synced(correction_ids),
+            AICommand::MarkCorrectionsDrained { correction_ids } =>
+                self.handle_mark_corrections_drained(correction_ids),
         }
     }
+
+    // === Model Handlers ===
 
     fn handle_register_model(&self, board_id: String, file_id: String, skill_md: String) {
         let result = (|| -> Result<ModelRecord> {
             let skill = Skill::parse(&skill_md)?;
-            let db = self.db.lock().unwrap();
-            
+
             let record = ModelRecord {
                 id: uuid::Uuid::new_v4().to_string(),
                 board_id: board_id.clone(),
                 name: skill.name.clone(),
-                version: skill.version.clone(),
-                kind: format!("{:?}", skill.kind).to_lowercase(),
-                capabilities: skill.capabilities.iter()
-                    .map(|c| format!("{:?}", c).to_lowercase())
-                    .collect(),
-                tags: skill.tags.clone(),
+                version: skill.version.clone().unwrap_or_else(|| "0.0.0".to_string()),
+                kind: skill.kind.as_ref().map(|k| format!("{:?}", k).to_lowercase())
+                    .unwrap_or_else(|| "unknown".to_string()),
+                capabilities: skill.capabilities.clone(),
+                tags: vec![],
                 skill_md: skill_md.clone(),
-                model_hash: String::new(), // TODO: compute from file
+                model_hash: String::new(),
                 file_id: Some(file_id),
-                author: skill.author.clone(),
+                author: skill.author.clone().unwrap_or_default(),
                 created_at: chrono::Utc::now().timestamp(),
                 updated_at: chrono::Utc::now().timestamp(),
             };
-            
+
+            let db = self.db.lock().unwrap();
             registry::insert(&db, &record)?;
             Ok(record)
         })();
 
         match result {
             Ok(record) => {
-                // Push local event
                 self.push_event(AIEvent::ModelRegistered {
                     model_id: record.id.clone(),
                     board_id: record.board_id.clone(),
@@ -378,8 +415,6 @@ impl AISystem {
                     kind: record.kind.clone(),
                     capabilities: record.capabilities.clone(),
                 });
-                
-                // Push network event for broadcast
                 self.push_network_event(AINetworkEvent::ModelRegistered {
                     model_id: record.id,
                     board_id: record.board_id,
@@ -391,42 +426,25 @@ impl AISystem {
                     author: record.author,
                 });
             }
-            Err(e) => {
-                self.push_event(AIEvent::Error {
-                    command: "RegisterModel".to_string(),
-                    error: e.to_string(),
-                });
-            }
+            Err(e) => self.push_event(AIEvent::Error {
+                command: "RegisterModel".to_string(),
+                error: e.to_string(),
+            }),
         }
     }
 
     fn handle_unregister_model(&self, model_id: String) {
-        let result = (|| -> Result<String> {
-            let db = self.db.lock().unwrap();
-            let record = registry::get(&db, &model_id)?
-                .ok_or_else(|| anyhow::anyhow!("Model not found"))?;
-            let board_id = record.board_id.clone();
-            registry::delete(&db, &model_id)?;
-            Ok(board_id)
-        })();
-
-        match result {
-            Ok(board_id) => {
-                self.push_event(AIEvent::ModelUnregistered {
-                    model_id: model_id.clone(),
-                    board_id: board_id.clone(),
-                });
-                self.push_network_event(AINetworkEvent::ModelUnregistered {
-                    model_id,
-                    board_id,
-                });
-            }
-            Err(e) => {
-                self.push_event(AIEvent::Error {
-                    command: "UnregisterModel".to_string(),
-                    error: e.to_string(),
-                });
-            }
+        let db = self.db.lock().unwrap();
+        if let Ok(Some(record)) = registry::get(&db, &model_id) {
+            let _ = registry::delete(&db, &model_id);
+            self.push_event(AIEvent::ModelUnregistered {
+                model_id: model_id.clone(),
+                board_id: record.board_id.clone(),
+            });
+            self.push_network_event(AINetworkEvent::ModelUnregistered {
+                model_id,
+                board_id: record.board_id,
+            });
         }
     }
 
@@ -435,79 +453,96 @@ impl AISystem {
             let db = self.db.lock().unwrap();
             let record = registry::get(&db, &model_id)?
                 .ok_or_else(|| anyhow::anyhow!("Model not found"))?;
-            
-            let skill = Skill::parse(&record.skill_md)?;
             drop(db);
-            
+
+            let skill = Skill::parse(&record.skill_md)?;
+            let model_dir = self.models_dir.join(&record.name);
+
             let mut runtime = self.runtime.lock().unwrap();
-            runtime.load_from_skill(&skill, &self.models_dir)?;
-            
+            runtime.load_from_skill(&skill, &model_dir)?;
+
+            if skill.has_capability("sql_generation") ||
+                skill.playbook_scope.as_deref() == Some("cyan-lens") {
+                *self.lens_model_id.lock().unwrap() = Some(model_id.clone());
+            }
+
             Ok(record.name)
         })();
 
         match result {
-            Ok(name) => {
-                self.push_event(AIEvent::ModelLoaded {
-                    model_id,
-                    name,
-                });
-            }
-            Err(e) => {
-                self.push_event(AIEvent::Error {
-                    command: "LoadModel".to_string(),
-                    error: e.to_string(),
-                });
-            }
+            Ok(name) => self.push_event(AIEvent::ModelLoaded { model_id, name }),
+            Err(e) => self.push_event(AIEvent::Error {
+                command: "LoadModel".to_string(),
+                error: e.to_string(),
+            }),
         }
     }
 
     fn handle_unload_model(&self, model_id: String) {
-        let result = (|| -> Result<()> {
-            let mut runtime = self.runtime.lock().unwrap();
-            runtime.unload(&model_id)?;
-            Ok(())
+        self.runtime.lock().unwrap().unload(&model_id);
+
+        let mut lens_id = self.lens_model_id.lock().unwrap();
+        if lens_id.as_ref() == Some(&model_id) {
+            *lens_id = None;
+        }
+
+        self.push_event(AIEvent::ModelUnloaded { model_id });
+    }
+
+    fn handle_list_models(&self, board_id: String) {
+        let result = (|| -> Result<Vec<ModelInfo>> {
+            let db = self.db.lock().unwrap();
+            let records = registry::list_by_board(&db, &board_id)?;
+            let runtime = self.runtime.lock().unwrap();
+
+            Ok(records.into_iter().map(|r| ModelInfo {
+                id: r.id.clone(),
+                name: r.name,
+                version: r.version,
+                kind: r.kind,
+                capabilities: r.capabilities,
+                loaded: runtime.is_loaded(&r.id),
+            }).collect())
         })();
 
         match result {
-            Ok(()) => {
-                self.push_event(AIEvent::ModelUnloaded { model_id });
-            }
-            Err(e) => {
-                self.push_event(AIEvent::Error {
-                    command: "UnloadModel".to_string(),
-                    error: e.to_string(),
-                });
-            }
+            Ok(models) => self.push_event(AIEvent::ModelsList { board_id, models }),
+            Err(e) => self.push_event(AIEvent::Error {
+                command: "ListModels".to_string(),
+                error: e.to_string(),
+            }),
         }
     }
+
+    fn handle_list_loaded_models(&self) {
+        let models = self.runtime.lock().unwrap().loaded_models();
+        self.push_event(AIEvent::LoadedModelsList { models });
+    }
+
+    // === Inference Handlers ===
 
     fn handle_infer(&self, request_id: String, model_id: String, input_json: String) {
         let result = (|| -> Result<(String, u64)> {
             let input: InferenceInput = serde_json::from_str(&input_json)?;
-            let mut runtime = self.runtime.lock().unwrap();
             let start = std::time::Instant::now();
+            let mut runtime = self.runtime.lock().unwrap();
             let output = runtime.infer_sync(&model_id, input)?;
             let latency_ms = start.elapsed().as_millis() as u64;
-            let output_json = serde_json::to_string(&output)?;
-            Ok((output_json, latency_ms))
+            Ok((serde_json::to_string(&output)?, latency_ms))
         })();
 
         match result {
-            Ok((output_json, latency_ms)) => {
-                self.push_event(AIEvent::InferenceComplete {
-                    request_id,
-                    model_id,
-                    output_json,
-                    latency_ms,
-                });
-            }
-            Err(e) => {
-                self.push_event(AIEvent::InferenceError {
-                    request_id,
-                    model_id,
-                    error: e.to_string(),
-                });
-            }
+            Ok((output_json, latency_ms)) => self.push_event(AIEvent::InferenceComplete {
+                request_id,
+                model_id,
+                output_json,
+                latency_ms,
+            }),
+            Err(e) => self.push_event(AIEvent::InferenceError {
+                request_id,
+                model_id,
+                error: e.to_string(),
+            }),
         }
     }
 
@@ -517,28 +552,200 @@ impl AISystem {
             let lora_record = registry::get(&db, &lora_model_id)?
                 .ok_or_else(|| anyhow::anyhow!("LoRA model not found"))?;
             drop(db);
-            
-            let lora_path = self.models_dir.join(&lora_record.name);
-            let mut runtime = self.runtime.lock().unwrap();
-            runtime.swap_lora(&base_model_id, &lora_path)?;
+
+            let lora_skill = Skill::parse(&lora_record.skill_md)?;
+            let lora_path = lora_skill.model_path()
+                .ok_or_else(|| anyhow::anyhow!("LoRA model file not found"))?;
+
+            self.runtime.lock().unwrap().swap_lora(&base_model_id, &lora_path)?;
             Ok(())
         })();
 
         match result {
-            Ok(()) => {
-                self.push_event(AIEvent::LoraSwapped {
-                    base_model_id,
-                    lora_model_id,
-                });
-            }
-            Err(e) => {
-                self.push_event(AIEvent::Error {
-                    command: "SwapLora".to_string(),
-                    error: e.to_string(),
-                });
-            }
+            Ok(()) => self.push_event(AIEvent::LoraSwapped { base_model_id, lora_model_id }),
+            Err(e) => self.push_event(AIEvent::Error {
+                command: "SwapLora".to_string(),
+                error: e.to_string(),
+            }),
         }
     }
+
+    fn handle_process_whiteboard(&self, request_id: String, _image_hash: String) {
+        self.push_event(AIEvent::WhiteboardError {
+            request_id,
+            error: "Pipeline not yet implemented".to_string(),
+        });
+    }
+
+    // === CyanLens Handlers ===
+
+    fn handle_lens_search(&self, request_id: String, query: String) {
+        let result = (|| -> Result<LensResponse> {
+            let model_id = self.lens_model_id.lock().unwrap().clone()
+                .ok_or_else(|| anyhow::anyhow!("Lens model not loaded"))?;
+
+            let cyan_db = Connection::open(&self.cyan_db_path)?;
+            let playbook_db = self.db.lock().unwrap();
+            let mut runtime = self.runtime.lock().unwrap();
+
+            self.lens.search(&mut runtime, &model_id, &playbook_db, &cyan_db, &request_id, &query)
+        })();
+
+        match result {
+            Ok(response) => {
+                let results = response.results.iter().map(|r| SearchResultEvent {
+                    id: r.id.clone(),
+                    name: r.name.clone(),
+                    result_type: r.result_type.clone(),
+                    snippet: r.snippet.clone(),
+                    deep_link: r.deep_link.clone(),
+                }).collect();
+
+                self.push_event(AIEvent::LensSearchComplete {
+                    request_id: response.request_id,
+                    query: response.query,
+                    generated_sql: response.generated_sql,
+                    results,
+                    playbook_bullets_used: response.playbook_bullets_used,
+                    latency_ms: response.latency_ms,
+                });
+            }
+            Err(e) => self.push_event(AIEvent::LensSearchError {
+                request_id,
+                error: e.to_string(),
+            }),
+        }
+    }
+
+    fn handle_lens_feedback(
+        &self,
+        request_id: String,
+        was_helpful: bool,
+        bullet_feedback: Vec<BulletFeedbackInput>,
+        correction: Option<LensCorrectionInput>,
+    ) {
+        let result = (|| -> Result<Option<String>> {
+            let db = self.db.lock().unwrap();
+
+            let feedback = lens::LensFeedback {
+                request_id: request_id.clone(),
+                was_helpful,
+                bullet_feedback: bullet_feedback.iter().map(|bf| lens::BulletFeedback {
+                    bullet_id: bf.bullet_id.clone(),
+                    tag: bf.tag.clone(),
+                }).collect(),
+                correction: correction.map(|c| lens::LensCorrection {
+                    wrong_sql: c.wrong_sql,
+                    correct_sql: c.correct_sql,
+                    explanation: c.explanation,
+                }),
+            };
+
+            self.lens.process_feedback(&db, &feedback)
+        })();
+
+        match result {
+            Ok(new_bullet_id) => self.push_event(AIEvent::LensFeedbackRecorded {
+                request_id,
+                new_bullet_id,
+            }),
+            Err(e) => self.push_event(AIEvent::Error {
+                command: "LensFeedback".to_string(),
+                error: e.to_string(),
+            }),
+        }
+    }
+
+    // === Playbook Handlers ===
+
+    fn handle_playbook_add(&self, scope: String, section: String, content: String) {
+        let result = (|| -> Result<String> {
+            let db = self.db.lock().unwrap();
+            playbook::add(&db, &scope, Section::from_str(&section), &content)
+        })();
+
+        match result {
+            Ok(bullet_id) => {
+                self.push_event(AIEvent::PlaybookBulletAdded {
+                    bullet_id: bullet_id.clone(),
+                    scope: scope.clone(),
+                    section: section.clone(),
+                });
+                self.push_network_event(AINetworkEvent::PlaybookBulletShared {
+                    bullet_id,
+                    scope,
+                    section,
+                    content,
+                    user_id: self.user_id.clone(),
+                });
+            }
+            Err(e) => self.push_event(AIEvent::Error {
+                command: "PlaybookAdd".to_string(),
+                error: e.to_string(),
+            }),
+        }
+    }
+
+    fn handle_playbook_feedback(&self, bullet_id: String, tag: String) {
+        let db = self.db.lock().unwrap();
+        match playbook::record_feedback(&db, &bullet_id, FeedbackTag::from_str(&tag)) {
+            Ok(()) => self.push_event(AIEvent::PlaybookFeedbackRecorded { bullet_id }),
+            Err(e) => self.push_event(AIEvent::Error {
+                command: "PlaybookFeedback".to_string(),
+                error: e.to_string(),
+            }),
+        }
+    }
+
+    fn handle_playbook_stats(&self, scope: String) {
+        let db = self.db.lock().unwrap();
+        match playbook::stats(&db, &scope) {
+            Ok(stats) => self.push_event(AIEvent::PlaybookStatsResult {
+                scope,
+                total_bullets: stats.total_bullets,
+                by_section: stats.by_section,
+                avg_score: stats.avg_score,
+            }),
+            Err(e) => self.push_event(AIEvent::Error {
+                command: "PlaybookStats".to_string(),
+                error: e.to_string(),
+            }),
+        }
+    }
+
+    fn handle_playbook_list(&self, scope: String) {
+        let db = self.db.lock().unwrap();
+        match playbook::list_all(&db, &scope) {
+            Ok(bullets) => {
+                let infos = bullets.iter().map(|b| BulletInfo {
+                    id: b.id.clone(),
+                    section: b.section.as_str().to_string(),
+                    content: b.content.clone(),
+                    helpful_count: b.helpful_count,
+                    harmful_count: b.harmful_count,
+                    score: b.score,
+                }).collect();
+                self.push_event(AIEvent::PlaybookListResult { scope, bullets: infos });
+            }
+            Err(e) => self.push_event(AIEvent::Error {
+                command: "PlaybookList".to_string(),
+                error: e.to_string(),
+            }),
+        }
+    }
+
+    fn handle_playbook_delete(&self, bullet_id: String) {
+        let db = self.db.lock().unwrap();
+        match playbook::delete(&db, &bullet_id) {
+            Ok(()) => self.push_event(AIEvent::PlaybookBulletDeleted { bullet_id }),
+            Err(e) => self.push_event(AIEvent::Error {
+                command: "PlaybookDelete".to_string(),
+                error: e.to_string(),
+            }),
+        }
+    }
+
+    // === Correction Handlers ===
 
     fn handle_log_correction(
         &self,
@@ -550,10 +757,9 @@ impl AISystem {
     ) {
         let result = (|| -> Result<(String, String)> {
             let db = self.db.lock().unwrap();
-            
             let record = registry::get(&db, &model_id)?
                 .ok_or_else(|| anyhow::anyhow!("Model not found"))?;
-            
+
             let correction = Correction {
                 id: uuid::Uuid::new_v4().to_string(),
                 model_id: model_id.clone(),
@@ -566,7 +772,7 @@ impl AISystem {
                 synced: false,
                 drained: false,
             };
-            
+
             correction::insert(&db, &correction)?;
             Ok((correction.id, record.name))
         })();
@@ -577,8 +783,7 @@ impl AISystem {
                     correction_id: correction_id.clone(),
                     model_id: model_id.clone(),
                 });
-                
-                // Get correction for network event
+
                 let db = self.db.lock().unwrap();
                 if let Ok(Some(c)) = correction::get(&db, &correction_id) {
                     self.push_network_event(AINetworkEvent::CorrectionLogged {
@@ -594,80 +799,32 @@ impl AISystem {
                     });
                 }
             }
-            Err(e) => {
-                self.push_event(AIEvent::Error {
-                    command: "LogCorrection".to_string(),
-                    error: e.to_string(),
-                });
-            }
+            Err(e) => self.push_event(AIEvent::Error {
+                command: "LogCorrection".to_string(),
+                error: e.to_string(),
+            }),
         }
-    }
-
-    fn handle_list_models(&self, board_id: String) {
-        let result = (|| -> Result<Vec<ModelInfo>> {
-            let db = self.db.lock().unwrap();
-            let records = registry::list_by_board(&db, &board_id)?;
-            let runtime = self.runtime.lock().unwrap();
-            
-            let models = records.into_iter().map(|r| {
-                ModelInfo {
-                    id: r.id.clone(),
-                    name: r.name,
-                    version: r.version,
-                    kind: r.kind,
-                    capabilities: r.capabilities,
-                    loaded: runtime.is_loaded(&r.id),
-                }
-            }).collect();
-            
-            Ok(models)
-        })();
-
-        match result {
-            Ok(models) => {
-                self.push_event(AIEvent::ModelsList { board_id, models });
-            }
-            Err(e) => {
-                self.push_event(AIEvent::Error {
-                    command: "ListModels".to_string(),
-                    error: e.to_string(),
-                });
-            }
-        }
-    }
-
-    fn handle_list_loaded_models(&self) {
-        let runtime = self.runtime.lock().unwrap();
-        let models = runtime.loaded_models();
-        self.push_event(AIEvent::LoadedModelsList { models });
     }
 
     fn handle_get_pending_corrections(&self, limit: u32) {
-        let result = (|| -> Result<Vec<CorrectionInfo>> {
-            let db = self.db.lock().unwrap();
-            let corrections = correction::list_pending(&db, limit)?;
-            
-            Ok(corrections.into_iter().map(|c| CorrectionInfo {
-                id: c.id,
-                model_id: c.model_id,
-                input_type: format!("{:?}", c.input_type).to_lowercase(),
-                input_data: c.input_data,
-                original: c.original,
-                corrected: c.corrected,
-                timestamp: c.timestamp,
-            }).collect())
-        })();
-
-        match result {
+        let db = self.db.lock().unwrap();
+        match correction::list_pending(&db, limit) {
             Ok(corrections) => {
-                self.push_event(AIEvent::PendingCorrections { corrections });
+                let infos = corrections.into_iter().map(|c| CorrectionInfo {
+                    id: c.id,
+                    model_id: c.model_id,
+                    input_type: format!("{:?}", c.input_type).to_lowercase(),
+                    input_data: c.input_data,
+                    original: c.original,
+                    corrected: c.corrected,
+                    timestamp: c.timestamp,
+                }).collect();
+                self.push_event(AIEvent::PendingCorrections { corrections: infos });
             }
-            Err(e) => {
-                self.push_event(AIEvent::Error {
-                    command: "GetPendingCorrections".to_string(),
-                    error: e.to_string(),
-                });
-            }
+            Err(e) => self.push_event(AIEvent::Error {
+                command: "GetPendingCorrections".to_string(),
+                error: e.to_string(),
+            }),
         }
     }
 
@@ -684,20 +841,6 @@ impl AISystem {
             let _ = correction::mark_drained(&db, &id);
         }
     }
-
-    fn handle_process_whiteboard(&self, request_id: String, _image_hash: String) {
-        // TODO: Implement pipeline processing
-        // 1. Load image from blob store using hash
-        // 2. Run YOLO detection
-        // 3. Run TrOCR on text regions
-        // 4. Apply dictionary correction
-        // 5. Generate Mermaid with Phi
-        
-        self.push_event(AIEvent::WhiteboardError {
-            request_id,
-            error: "Pipeline not yet implemented".to_string(),
-        });
-    }
 }
 
 // ---------- FFI Functions ----------
@@ -706,97 +849,97 @@ impl AISystem {
 #[unsafe(no_mangle)]
 pub extern "C" fn xaero_ai_init(
     db_path: *const c_char,
+    cyan_db_path: *const c_char,
     models_dir: *const c_char,
     user_id: *const c_char,
 ) -> bool {
     let db_path = unsafe { CStr::from_ptr(db_path) }.to_string_lossy();
+    let cyan_db_path = unsafe { CStr::from_ptr(cyan_db_path) }.to_string_lossy();
     let models_dir = unsafe { CStr::from_ptr(models_dir) }.to_string_lossy();
     let user_id = unsafe { CStr::from_ptr(user_id) }.to_string_lossy();
 
-    // Initialize tokio runtime
-    let rt = TokioRuntime::new();
-    if rt.is_err() {
+    if TOKIO_RT.set(TokioRuntime::new().unwrap()).is_err() {
         return false;
     }
-    let _ = TOKIO_RT.set(rt.unwrap());
 
-    // Initialize AI system
-    match AISystem::new(&db_path, &models_dir, &user_id) {
-        Ok(system) => {
-            let _ = AI_SYSTEM.set(Arc::new(system));
-            true
-        }
+    match AISystem::new(&db_path, &cyan_db_path, &models_dir, &user_id) {
+        Ok(system) => AI_SYSTEM.set(Arc::new(system)).is_ok(),
         Err(_) => false,
     }
 }
 
-/// Send a command to the AI system
+/// Send a command (JSON)
 #[unsafe(no_mangle)]
 pub extern "C" fn xaero_ai_command(json: *const c_char) -> bool {
-    let Some(system) = AI_SYSTEM.get() else {
-        return false;
-    };
-
+    let Some(system) = AI_SYSTEM.get() else { return false };
     let json_str = unsafe { CStr::from_ptr(json) }.to_string_lossy();
-    
+
     match serde_json::from_str::<AICommand>(&json_str) {
-        Ok(cmd) => {
-            system.handle_command(cmd);
-            true
-        }
+        Ok(cmd) => { system.handle_command(cmd); true }
         Err(_) => false,
     }
 }
 
-/// Poll for AI events (returns JSON or null)
+/// Poll for events (JSON or null)
 #[unsafe(no_mangle)]
 pub extern "C" fn xaero_ai_poll_event() -> *mut c_char {
-    let Some(system) = AI_SYSTEM.get() else {
-        return std::ptr::null_mut();
-    };
-
-    match system.pop_event() {
-        Some(event) => {
-            match serde_json::to_string(&event) {
-                Ok(json) => CString::new(json).unwrap().into_raw(),
-                Err(_) => std::ptr::null_mut(),
-            }
-        }
-        None => std::ptr::null_mut(),
-    }
+    AI_SYSTEM.get()
+        .and_then(|s| s.pop_event())
+        .and_then(|e| serde_json::to_string(&e).ok())
+        .and_then(|j| CString::new(j).ok())
+        .map(|c| c.into_raw())
+        .unwrap_or(std::ptr::null_mut())
 }
 
-/// Poll for network events (for cyan-backend to broadcast)
+/// Poll for network events
 #[unsafe(no_mangle)]
 pub extern "C" fn xaero_ai_poll_network_event() -> *mut c_char {
-    let Some(system) = AI_SYSTEM.get() else {
-        return std::ptr::null_mut();
-    };
-
-    match system.pop_network_event() {
-        Some(event) => {
-            match serde_json::to_string(&event) {
-                Ok(json) => CString::new(json).unwrap().into_raw(),
-                Err(_) => std::ptr::null_mut(),
-            }
-        }
-        None => std::ptr::null_mut(),
-    }
+    AI_SYSTEM.get()
+        .and_then(|s| s.pop_network_event())
+        .and_then(|e| serde_json::to_string(&e).ok())
+        .and_then(|j| CString::new(j).ok())
+        .map(|c| c.into_raw())
+        .unwrap_or(std::ptr::null_mut())
 }
 
-/// Free a string returned by xaero_ai functions
+/// Free string
 #[unsafe(no_mangle)]
 pub extern "C" fn xaero_ai_free_string(s: *mut c_char) {
-    if !s.is_null() {
-        unsafe { drop(CString::from_raw(s)); }
-    }
+    if !s.is_null() { unsafe { drop(CString::from_raw(s)); } }
 }
 
-/// Shutdown the AI system
+/// Shutdown
 #[unsafe(no_mangle)]
-pub extern "C" fn xaero_ai_shutdown() {
-    // Models will be dropped when system is dropped
-    // For now, just a placeholder
+pub extern "C" fn xaero_ai_shutdown() {}
+
+/// Quick lens search
+#[unsafe(no_mangle)]
+pub extern "C" fn xaero_ai_lens_search(query: *const c_char) -> *mut c_char {
+    let Some(system) = AI_SYSTEM.get() else { return std::ptr::null_mut() };
+    let query_str = unsafe { CStr::from_ptr(query) }.to_string_lossy();
+    let request_id = uuid::Uuid::new_v4().to_string();
+
+    system.handle_command(AICommand::LensSearch {
+        request_id: request_id.clone(),
+        query: query_str.to_string(),
+    });
+
+    CString::new(request_id).unwrap().into_raw()
+}
+
+/// Quick feedback
+#[unsafe(no_mangle)]
+pub extern "C" fn xaero_ai_lens_feedback(request_id: *const c_char, was_helpful: bool) -> bool {
+    let Some(system) = AI_SYSTEM.get() else { return false };
+    let request_id = unsafe { CStr::from_ptr(request_id) }.to_string_lossy();
+
+    system.handle_command(AICommand::LensFeedback {
+        request_id: request_id.to_string(),
+        was_helpful,
+        bullet_feedback: vec![],
+        correction: None,
+    });
+    true
 }
 
 #[cfg(test)]
@@ -804,23 +947,24 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_command_serialization() {
-        let cmd = AICommand::LoadModel {
-            model_id: "test-123".to_string(),
+    fn test_lens_search_command() {
+        let cmd = AICommand::LensSearch {
+            request_id: "test-123".to_string(),
+            query: "find design boards".to_string(),
         };
         let json = serde_json::to_string(&cmd).unwrap();
-        assert!(json.contains("LoadModel"));
+        assert!(json.contains("LensSearch"));
     }
 
     #[test]
-    fn test_event_serialization() {
-        let event = AIEvent::ModelLoaded {
-            model_id: "test-123".to_string(),
-            name: "test-model".to_string(),
+    fn test_playbook_command() {
+        let cmd = AICommand::PlaybookAdd {
+            scope: "cyan-lens".to_string(),
+            section: "strategies".to_string(),
+            content: "Search by group name first".to_string(),
         };
-        let json = serde_json::to_string(&event).unwrap();
-        assert!(json.contains("ModelLoaded"));
+        let json = serde_json::to_string(&cmd).unwrap();
+        let parsed: AICommand = serde_json::from_str(&json).unwrap();
+        assert!(matches!(parsed, AICommand::PlaybookAdd { .. }));
     }
 }
-
-pub mod arrow_detector;

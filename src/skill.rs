@@ -1,32 +1,21 @@
-//! SKILL.md parsing and model manifest types
+//! SKILL.md parsing - Agent Skills format with inline tools
 //!
-//! Each model bundle contains a SKILL.md file with YAML frontmatter
-//! describing capabilities, input/output schemas, and metadata.
+//! Each model package contains a SKILL.md file with YAML frontmatter
+//! describing capabilities, inline tools, and playbook scope.
 
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
-/// Model capability - what the model can do
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Capability {
-    /// Text generation (chat, completion)
-    TextGeneration,
-    /// Generate Mermaid diagrams from text
-    TextToMermaid,
-    /// Generate Markdown documents
-    TextToMarkdown,
-    /// Detect objects/shapes in images (YOLO)
-    ImageToBoxes,
-    /// Extract text from images (OCR)
-    ImageToText,
-    /// Analyze project health from integration data
-    ProjectHealth,
-    /// Design pattern recommendations
-    DesignPatterns,
-    /// Custom capability
-    Custom(String),
+/// Inline tool definition (embedded in SKILL.md)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InlineTool {
+    pub name: String,
+    pub description: String,
+    #[serde(default)]
+    pub constraints: Vec<String>,
+    #[serde(default)]
+    pub context: Option<String>,
 }
 
 /// Model kind - runtime to use
@@ -58,57 +47,91 @@ pub enum IOType {
 pub struct IOSchema {
     #[serde(rename = "type")]
     pub io_type: IOType,
-    /// Supported formats (e.g., ["png", "jpeg"] for images)
     #[serde(default)]
     pub formats: Vec<String>,
-    /// JSON schema for structured output (optional)
     #[serde(default)]
     pub schema: Option<serde_json::Value>,
 }
 
-/// Parsed SKILL.md manifest
+impl Default for IOSchema {
+    fn default() -> Self {
+        Self {
+            io_type: IOType::Text,
+            formats: Vec::new(),
+            schema: None,
+        }
+    }
+}
+
+/// Capability - what the model can do
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Capability {
+    TextGeneration,
+    TextToMermaid,
+    TextToMarkdown,
+    ImageToBoxes,
+    ImageToText,
+    SemanticSearch,
+    SqlGeneration,
+    ProjectHealth,
+    DesignPatterns,
+    Custom(String),
+}
+
+/// Parsed SKILL.md
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Skill {
-    /// Model name (unique identifier)
+    // === Required (Agent Skills Standard) ===
     pub name: String,
-    /// Semantic version
-    pub version: String,
-    /// Runtime kind
-    pub kind: ModelKind,
-    /// Searchable tags
-    #[serde(default)]
-    pub tags: Vec<String>,
-    /// What this model can do
-    pub capabilities: Vec<Capability>,
-    /// Input schema
-    pub input: IOSchema,
-    /// Output schema
-    pub output: IOSchema,
-    /// Base model name (for LoRA adapters)
-    #[serde(default)]
-    pub base_model: Option<String>,
-    /// LoRA rank (for LoRA adapters)
-    #[serde(default)]
-    pub lora_rank: Option<u8>,
-    /// Author identifier
-    #[serde(default)]
-    pub author: String,
-    /// Creation timestamp (Unix epoch)
-    #[serde(default)]
-    pub created: i64,
-    /// Model file name (relative to SKILL.md directory)
+    pub description: String,
+
+    // === Model Info ===
+    #[serde(default, rename = "model_kind")]
+    pub kind: Option<ModelKind>,
     #[serde(default)]
     pub model_file: Option<String>,
-    /// Description (from markdown body)
+
+    // === Optional ===
+    #[serde(default)]
+    pub version: Option<String>,
+    #[serde(default)]
+    pub author: Option<String>,
+    #[serde(default)]
+    pub created: Option<i64>,
+
+    // === I/O Schemas ===
+    #[serde(default)]
+    pub input: IOSchema,
+    #[serde(default)]
+    pub output: IOSchema,
+
+    // === Capabilities ===
+    #[serde(default)]
+    pub capabilities: Vec<String>,
+
+    // === Playbook ===
+    #[serde(default)]
+    pub playbook_scope: Option<String>,
+
+    // === Inline Tools ===
+    #[serde(default)]
+    pub tools: Vec<InlineTool>,
+
+    // === Base model for LoRA ===
+    #[serde(default)]
+    pub base_model: Option<String>,
+
+    // === Parsed from body ===
     #[serde(skip)]
-    pub description: String,
-    /// Directory containing this skill
+    pub instructions: String,
+
     #[serde(skip)]
     pub directory: std::path::PathBuf,
 }
 
 impl Skill {
-    /// Load a skill from a directory containing SKILL.md
+    /// Load skill from directory containing SKILL.md
     pub fn load(dir: &Path) -> Result<Self> {
         let skill_path = dir.join("SKILL.md");
         if !skill_path.exists() {
@@ -129,15 +152,12 @@ impl Skill {
 
     /// Parse SKILL.md content (YAML frontmatter + markdown body)
     pub fn parse(content: &str) -> Result<Self> {
-        // Split frontmatter from body
         let (frontmatter, body) = Self::split_frontmatter(content)?;
 
-        // Parse YAML frontmatter
         let mut skill: Skill = serde_yaml::from_str(&frontmatter)
             .map_err(|e| anyhow!("Failed to parse SKILL.md frontmatter: {}", e))?;
 
-        // Extract description from markdown body
-        skill.description = body.trim().to_string();
+        skill.instructions = body.trim().to_string();
 
         Ok(skill)
     }
@@ -161,11 +181,12 @@ impl Skill {
     }
 
     /// Auto-detect model file in directory
-    fn detect_model_file(dir: &Path, kind: &ModelKind) -> Option<String> {
+    fn detect_model_file(dir: &Path, kind: &Option<ModelKind>) -> Option<String> {
         let extensions = match kind {
-            ModelKind::Gguf => vec!["gguf"],
-            ModelKind::Onnx => vec!["onnx"],
-            ModelKind::Lora => vec!["safetensors", "bin"],
+            Some(ModelKind::Gguf) => vec!["gguf"],
+            Some(ModelKind::Onnx) => vec!["onnx"],
+            Some(ModelKind::Lora) => vec!["safetensors", "bin"],
+            None => vec!["gguf", "onnx"],
         };
 
         for entry in std::fs::read_dir(dir).ok()? {
@@ -188,8 +209,41 @@ impl Skill {
     }
 
     /// Check if this model has a specific capability
-    pub fn has_capability(&self, cap: &Capability) -> bool {
-        self.capabilities.contains(cap)
+    pub fn has_capability(&self, cap: &str) -> bool {
+        self.capabilities.iter().any(|c| c == cap)
+    }
+
+    /// Get tool by name
+    pub fn get_tool(&self, name: &str) -> Option<&InlineTool> {
+        self.tools.iter().find(|t| t.name == name)
+    }
+
+    /// Build tool context for prompt injection
+    pub fn build_tool_context(&self) -> String {
+        if self.tools.is_empty() {
+            return String::new();
+        }
+
+        let mut ctx = String::from("<available_tools>\n");
+
+        for tool in &self.tools {
+            ctx.push_str(&format!("\n## {}\n", tool.name));
+            ctx.push_str(&format!("{}\n", tool.description));
+
+            if !tool.constraints.is_empty() {
+                ctx.push_str("\nConstraints:\n");
+                for c in &tool.constraints {
+                    ctx.push_str(&format!("- {}\n", c));
+                }
+            }
+
+            if let Some(ref context) = tool.context {
+                ctx.push_str(&format!("\n{}\n", context));
+            }
+        }
+
+        ctx.push_str("\n</available_tools>\n");
+        ctx
     }
 
     /// Content hash for deduplication (Blake3 of model file)
@@ -203,58 +257,67 @@ impl Skill {
     }
 }
 
-impl Default for IOSchema {
-    fn default() -> Self {
-        Self {
-            io_type: IOType::Text,
-            formats: Vec::new(),
-            schema: None,
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     const SAMPLE_SKILL: &str = r#"---
-name: whiteboard-detector
-version: 0.1.0
-kind: onnx
-tags: [vision, detection, whiteboard]
+name: cyan-lens
+version: 1.0.0
+description: AI assistant for Cyan workspace search and navigation
+model_kind: gguf
+model_file: phi-3-mini-Q4.gguf
 capabilities:
-  - image_to_boxes
-input:
-  type: image
-  formats: [png, jpeg]
-output:
-  type: boxes
-  schema:
-    class: string
-    confidence: float
-    bbox: [x, y, w, h]
-author: cyan
-created: 1702400000
+  - text_generation
+  - semantic_search
+  - sql_generation
+playbook_scope: cyan-lens
+tools:
+  - name: sql_query
+    description: Execute read-only SQL queries against workspace database
+    constraints:
+      - SELECT only
+      - No DROP/DELETE/INSERT/UPDATE
+      - Max 100 results
+    context: |
+      Tables: groups, workspaces, objects, notebook_cells, board_metadata
+
+  - name: deep_link
+    description: Generate cyan:// URLs for navigation
+    context: |
+      Format: cyan://group/{gid}/workspace/{wid}/board/{bid}
 ---
 
-# Whiteboard Shape Detector
+# CyanLens
 
-Detects 30 shape classes from whiteboard photos.
+## When to Use
+Use when user wants to search boards, find content, or navigate workspace.
 
-## Usage
-
-Pass an image, get bounding boxes.
+## Instructions
+1. Parse user query for intent
+2. Check playbook for learned patterns
+3. Generate SQL if searching
+4. Include deep links in results
 "#;
 
     #[test]
     fn test_parse_skill() {
         let skill = Skill::parse(SAMPLE_SKILL).unwrap();
-        assert_eq!(skill.name, "whiteboard-detector");
-        assert_eq!(skill.version, "0.1.0");
-        assert_eq!(skill.kind, ModelKind::Onnx);
-        assert!(skill.has_capability(&Capability::ImageToBoxes));
-        assert_eq!(skill.author, "cyan");
-        assert!(skill.description.contains("Whiteboard Shape Detector"));
+        assert_eq!(skill.name, "cyan-lens");
+        assert_eq!(skill.tools.len(), 2);
+        assert_eq!(skill.tools[0].name, "sql_query");
+        assert_eq!(skill.tools[1].name, "deep_link");
+        assert!(skill.playbook_scope.is_some());
+        assert!(skill.instructions.contains("CyanLens"));
+    }
+
+    #[test]
+    fn test_build_tool_context() {
+        let skill = Skill::parse(SAMPLE_SKILL).unwrap();
+        let ctx = skill.build_tool_context();
+        assert!(ctx.contains("<available_tools>"));
+        assert!(ctx.contains("sql_query"));
+        assert!(ctx.contains("SELECT only"));
     }
 
     #[test]
