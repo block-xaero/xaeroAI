@@ -185,6 +185,62 @@ Common queries:
         })
     }
 
+    /// Search with pre-fetched bullets (avoids holding MutexGuard across await)
+    pub fn search_with_bullets(
+        &self,
+        runtime: &mut Runtime,
+        model_id: &str,
+        bullets: &[Bullet],
+        cyan_db: &Connection,
+        request_id: &str,
+        query: &str,
+    ) -> Result<LensResponse> {
+        let start = std::time::Instant::now();
+
+        let bullet_ids: Vec<String> = bullets.iter().map(|b| b.id.clone()).collect();
+
+        // Build prompt with provided bullets
+        let prompt = self.build_prompt(query, bullets);
+
+        // Generate SQL with Phi
+        let input = InferenceInput::Text { prompt };
+        let output = runtime.infer_sync(model_id, input)?;
+
+        let generated_text = match output {
+            InferenceOutput::Text { content } => content,
+            InferenceOutput::Boxes { .. } => return Err(anyhow!("Unexpected output type: Boxes")),
+            InferenceOutput::Json { .. } => return Err(anyhow!("Unexpected output type: Json")),
+        };
+
+        // Extract SQL from response
+        let sql = Self::extract_sql(&generated_text);
+
+        // Validate and execute SQL
+        let results = if let Some(ref sql_query) = sql {
+            match self.execute_search(cyan_db, sql_query) {
+                Ok(r) => r,
+                Err(e) => {
+                    tracing::warn!("SQL execution failed: {}", e);
+                    self.fallback_search(cyan_db, query).unwrap_or_default()
+                }
+            }
+        } else {
+            self.fallback_search(cyan_db, query).unwrap_or_default()
+        };
+
+        let latency_ms = start.elapsed().as_millis() as u64;
+
+        Ok(LensResponse {
+            request_id: request_id.to_string(),
+            query: query.to_string(),
+            generated_sql: sql,
+            results,
+            playbook_bullets_used: bullet_ids,
+            latency_ms,
+            error: None,
+        })
+    }
+
     /// Build prompt with playbook context
     fn build_prompt(&self, query: &str, bullets: &[Bullet]) -> String {
         let mut prompt = String::new();
@@ -221,7 +277,7 @@ Common queries:
     }
 
     /// Extract SQL from model output
-    fn extract_sql(response: &str) -> Option<String> {
+    pub(crate) fn extract_sql(response: &str) -> Option<String> {
         let response = response.trim();
 
         // Try to find SQL in code block
@@ -286,7 +342,7 @@ Common queries:
     }
 
     /// Execute search SQL and format results
-    fn execute_search(&self, db: &Connection, sql: &str) -> Result<Vec<SearchResult>> {
+    pub fn execute_search(&self, db: &Connection, sql: &str) -> Result<Vec<SearchResult>> {
         // Add LIMIT if not present
         let sql = if !sql.to_uppercase().contains("LIMIT") {
             format!("{} LIMIT 100", sql.trim_end_matches(';'))

@@ -6,6 +6,7 @@
 //! - lens: CyanLens search with SQL generation
 //! - runtime: GGUF/ONNX model loading & inference
 //! - pipeline: Whiteboard → Mermaid conversion
+//! - executor: Action plan execution for cyan-sql
 //!
 //! Storage: SQLite (model_registry, corrections, playbook_bullets)
 //! Runtime: GGUF (llama-cpp), ONNX (ort)
@@ -22,6 +23,8 @@ pub mod pipeline;
 pub mod playbook;
 pub mod lens;
 pub mod arrow_detector;
+pub mod router;
+pub mod executor;
 
 pub use skill::{Skill, ModelKind, IOSchema, IOType, Capability, InlineTool};
 pub use runtime::{Runtime, InferenceInput, InferenceOutput, DetectedBox};
@@ -31,13 +34,15 @@ pub use dictionary::{Dictionary, DictionaryBuilder, DomainSource};
 pub use pipeline::{WhiteboardPipeline, PipelineResult, DetectedShape, BoundingBox, DiagramType};
 pub use playbook::{Bullet, Section, FeedbackTag, PlaybookStats};
 pub use lens::{CyanLens, LensResponse, LensFeedback, SearchResult};
+pub use router::{Specialist, RouteResult};
+pub use executor::{Executor, ActionPlan, ParsedOutput, ExecutionResult};
 
 use anyhow::Result;
 use once_cell::sync::OnceCell;
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::VecDeque,
+    collections::{VecDeque, HashMap},
     ffi::{c_char, CStr, CString},
     path::PathBuf,
     sync::{Arc, Mutex},
@@ -84,11 +89,23 @@ pub enum AICommand {
         request_id: String,
         query: String,
     },
+    LensSearchWithContext {
+        request_id: String,
+        query: String,
+        current_board_id: Option<String>,
+        current_workspace_id: Option<String>,
+    },
     LensFeedback {
         request_id: String,
         was_helpful: bool,
         bullet_feedback: Vec<BulletFeedbackInput>,
         correction: Option<LensCorrectionInput>,
+    },
+
+    // === Agent Confirmation ===
+    AgentConfirm {
+        request_id: String,
+        confirmed: bool,
     },
 
     // === Playbook Management ===
@@ -172,6 +189,8 @@ pub enum AIEvent {
     LensSearchComplete {
         request_id: String,
         query: String,
+        routed_to: String,
+        route_confidence: f32,
         generated_sql: Option<String>,
         results: Vec<SearchResultEvent>,
         playbook_bullets_used: Vec<String>,
@@ -179,6 +198,25 @@ pub enum AIEvent {
     },
     LensSearchError { request_id: String, error: String },
     LensFeedbackRecorded { request_id: String, new_bullet_id: Option<String> },
+
+    // === Agent Events ===
+    AgentConfirmation {
+        request_id: String,
+        intent: String,
+        confirmation_message: String,
+        actions_preview: Vec<String>,
+    },
+    AgentExecuted {
+        request_id: String,
+        intent: String,
+        affected_rows: u32,
+        message: String,
+    },
+    AgentError {
+        request_id: String,
+        step: String,
+        error: String,
+    },
 
     // === Playbook Events ===
     PlaybookBulletAdded { bullet_id: String, scope: String, section: String },
@@ -275,18 +313,29 @@ pub enum AINetworkEvent {
     },
 }
 
+// ---------- Pending Plan (for confirmation flow) ----------
+#[derive(Debug, Clone)]
+struct PendingPlan {
+    plan: ActionPlan,
+    current_board_id: Option<String>,
+    current_workspace_id: Option<String>,
+}
+
 // ---------- AI System ----------
 pub struct AISystem {
     db: Mutex<Connection>,
     cyan_db_path: PathBuf,
     runtime: Mutex<Runtime>,
     lens: CyanLens,
+    sql_lens: CyanLens,
+    sql_model_id: Mutex<Option<String>>,
     lens_model_id: Mutex<Option<String>>,
     event_queue: Mutex<VecDeque<AIEvent>>,
     network_event_queue: Mutex<VecDeque<AINetworkEvent>>,
     _command_tx: mpsc::UnboundedSender<AICommand>,
     models_dir: PathBuf,
     user_id: String,
+    pending_plans: Mutex<HashMap<String, PendingPlan>>,
 }
 
 impl AISystem {
@@ -301,18 +350,22 @@ impl AISystem {
         let runtime = Runtime::new()?;
         let (command_tx, _command_rx) = mpsc::unbounded_channel();
         let lens = CyanLens::new("cyan-lens");
+        let sql_lens = CyanLens::new("cyan-sql");
 
         Ok(Self {
             db: Mutex::new(db),
             cyan_db_path: PathBuf::from(cyan_db_path),
             runtime: Mutex::new(runtime),
             lens,
+            sql_lens,
+            sql_model_id: Mutex::new(None),
             lens_model_id: Mutex::new(None),
             event_queue: Mutex::new(VecDeque::new()),
             network_event_queue: Mutex::new(VecDeque::new()),
             _command_tx: command_tx,
             models_dir: PathBuf::from(models_dir),
             user_id: user_id.to_string(),
+            pending_plans: Mutex::new(HashMap::new()),
         })
     }
 
@@ -353,9 +406,13 @@ impl AISystem {
             AICommand::ProcessWhiteboard { request_id, image_hash } =>
                 self.handle_process_whiteboard(request_id, image_hash),
             AICommand::LensSearch { request_id, query } =>
-                self.handle_lens_search(request_id, query),
+                self.handle_lens_search(request_id, query, None, None),
+            AICommand::LensSearchWithContext { request_id, query, current_board_id, current_workspace_id } =>
+                self.handle_lens_search(request_id, query, current_board_id, current_workspace_id),
             AICommand::LensFeedback { request_id, was_helpful, bullet_feedback, correction } =>
                 self.handle_lens_feedback(request_id, was_helpful, bullet_feedback, correction),
+            AICommand::AgentConfirm { request_id, confirmed } =>
+                self.handle_agent_confirm(request_id, confirmed),
             AICommand::PlaybookAdd { scope, section, content } =>
                 self.handle_playbook_add(scope, section, content),
             AICommand::PlaybookFeedback { bullet_id, tag } =>
@@ -466,6 +523,12 @@ impl AISystem {
                 *self.lens_model_id.lock().unwrap() = Some(model_id.clone());
             }
 
+            // Track cyan-sql model separately
+            if skill.name == "cyan-sql" ||
+                skill.playbook_scope.as_deref() == Some("cyan-sql") {
+                *self.sql_model_id.lock().unwrap() = Some(model_id.clone());
+            }
+
             Ok(record.name)
         })();
 
@@ -484,6 +547,12 @@ impl AISystem {
         let mut lens_id = self.lens_model_id.lock().unwrap();
         if lens_id.as_ref() == Some(&model_id) {
             *lens_id = None;
+        }
+        drop(lens_id);
+
+        let mut sql_id = self.sql_model_id.lock().unwrap();
+        if sql_id.as_ref() == Some(&model_id) {
+            *sql_id = None;
         }
 
         self.push_event(AIEvent::ModelUnloaded { model_id });
@@ -579,10 +648,38 @@ impl AISystem {
 
     // === CyanLens Handlers ===
 
-    fn handle_lens_search(&self, request_id: String, query: String) {
+    fn handle_lens_search(
+        &self,
+        request_id: String,
+        query: String,
+        current_board_id: Option<String>,
+        current_workspace_id: Option<String>,
+    ) {
+        // Route query to appropriate specialist
+        let route_result = router::route(&query);
+
+        tracing::info!(
+            "🔀 Routing '{}' → {:?} (confidence: {:.0}%, reason: {})",
+            query,
+            route_result.specialist,
+            route_result.confidence * 100.0,
+            route_result.reason
+        );
+
+        match route_result.specialist {
+            router::Specialist::CyanSql => {
+                self.handle_sql_search(request_id, query, route_result, current_board_id, current_workspace_id);
+            }
+            router::Specialist::CyanLens => {
+                self.handle_lens_search_internal(request_id, query, route_result);
+            }
+        }
+    }
+
+    fn handle_lens_search_internal(&self, request_id: String, query: String, route_result: RouteResult) {
         let result = (|| -> Result<LensResponse> {
             let model_id = self.lens_model_id.lock().unwrap().clone()
-                .ok_or_else(|| anyhow::anyhow!("Lens model not loaded"))?;
+                .ok_or_else(|| anyhow::anyhow!("cyan-lens model not loaded"))?;
 
             let cyan_db = Connection::open(&self.cyan_db_path)?;
             let playbook_db = self.db.lock().unwrap();
@@ -604,6 +701,8 @@ impl AISystem {
                 self.push_event(AIEvent::LensSearchComplete {
                     request_id: response.request_id,
                     query: response.query,
+                    routed_to: route_result.specialist.model_id().to_string(),
+                    route_confidence: route_result.confidence,
                     generated_sql: response.generated_sql,
                     results,
                     playbook_bullets_used: response.playbook_bullets_used,
@@ -615,6 +714,201 @@ impl AISystem {
                 error: e.to_string(),
             }),
         }
+    }
+
+    fn handle_sql_search(
+        &self,
+        request_id: String,
+        query: String,
+        route_result: RouteResult,
+        current_board_id: Option<String>,
+        current_workspace_id: Option<String>,
+    ) {
+        let request_id_for_error = request_id.clone();  // Clone for error handling outside closure
+
+        let result = (|| -> Result<()> {
+            let start = std::time::Instant::now();
+
+            // Get playbook bullets for SQL scope
+            let db = self.db.lock().unwrap();
+            let bullets = playbook::retrieve(&db, "cyan-sql", &query, 5)
+                .unwrap_or_default();
+            let bullet_ids: Vec<String> = bullets.iter().map(|b| b.id.clone()).collect();
+            drop(db);
+
+            // Build prompt with SQL schema context
+            let prompt = self.build_sql_prompt(&query, &bullets);
+
+            // Get model ID - try cyan-sql first, fall back to lens model
+            let model_id = self.sql_model_id.lock().unwrap().clone()
+                .or_else(|| self.lens_model_id.lock().unwrap().clone())
+                .ok_or_else(|| anyhow::anyhow!("No SQL-capable model loaded"))?;
+
+            // Run inference
+            let mut runtime = self.runtime.lock().unwrap();
+            let input = InferenceInput::Text { prompt };
+            let output = runtime.infer_sync(&model_id, input)?;
+            drop(runtime);
+
+            let generated_text = match output {
+                InferenceOutput::Text { content } => content,
+                _ => return Err(anyhow::anyhow!("Unexpected output type")),
+            };
+
+            // Parse output using executor
+            let parsed = Executor::parse_output(&generated_text)?;
+
+            match parsed {
+                ParsedOutput::Sql(sql) => {
+                    // Pure SELECT query - execute immediately
+                    let cyan_db = Connection::open(&self.cyan_db_path)?;
+                    let results = self.sql_lens.execute_search(&cyan_db, &sql).unwrap_or_default();
+                    let latency_ms = start.elapsed().as_millis() as u64;
+
+                    let search_results: Vec<SearchResultEvent> = results.iter().map(|r| SearchResultEvent {
+                        id: r.id.clone(),
+                        name: r.name.clone(),
+                        result_type: r.result_type.clone(),
+                        snippet: r.snippet.clone(),
+                        deep_link: r.deep_link.clone(),
+                    }).collect();
+
+                    self.push_event(AIEvent::LensSearchComplete {
+                        request_id,
+                        query,
+                        routed_to: route_result.specialist.model_id().to_string(),
+                        route_confidence: route_result.confidence,
+                        generated_sql: Some(sql),
+                        results: search_results,
+                        playbook_bullets_used: bullet_ids,
+                        latency_ms,
+                    });
+                }
+
+                ParsedOutput::Plan(plan) => {
+                    // Action plan - check if confirmation needed
+                    if plan.requires_confirmation {
+                        let actions_preview: Vec<String> = plan.actions
+                            .iter()
+                            .map(|a| format!("{:?}", a))
+                            .collect();
+
+                        // Store pending plan
+                        self.pending_plans.lock().unwrap().insert(
+                            request_id.clone(),
+                            PendingPlan {
+                                plan: plan.clone(),
+                                current_board_id,
+                                current_workspace_id,
+                            },
+                        );
+
+                        // Ask user for confirmation
+                        self.push_event(AIEvent::AgentConfirmation {
+                            request_id,
+                            intent: plan.intent,
+                            confirmation_message: plan.confirmation.unwrap_or_else(|| "Execute this action?".to_string()),
+                            actions_preview,
+                        });
+                    } else {
+                        // Execute immediately
+                        self.execute_plan_internal(request_id, plan, current_board_id, current_workspace_id);
+                    }
+                }
+            }
+
+            Ok(())
+        })();
+
+        if let Err(e) = result {
+            self.push_event(AIEvent::AgentError {
+                request_id: request_id_for_error,
+                step: "generation".to_string(),
+                error: e.to_string(),
+            });
+        }
+    }
+
+    fn handle_agent_confirm(&self, request_id: String, confirmed: bool) {
+        let pending = self.pending_plans.lock().unwrap().remove(&request_id);
+
+        if let Some(PendingPlan { plan, current_board_id, current_workspace_id }) = pending {
+            if confirmed {
+                self.execute_plan_internal(request_id, plan, current_board_id, current_workspace_id);
+            } else {
+                self.push_event(AIEvent::AgentError {
+                    request_id,
+                    step: "confirmation".to_string(),
+                    error: "User cancelled action".to_string(),
+                });
+            }
+        } else {
+            self.push_event(AIEvent::AgentError {
+                request_id,
+                step: "confirmation".to_string(),
+                error: "No pending action found".to_string(),
+            });
+        }
+    }
+
+    fn execute_plan_internal(
+        &self,
+        request_id: String,
+        plan: ActionPlan,
+        current_board_id: Option<String>,
+        current_workspace_id: Option<String>,
+    ) {
+        let result = (|| -> Result<ExecutionResult> {
+            let cyan_db = Connection::open(&self.cyan_db_path)?;
+            let mut executor = Executor::new().with_context(current_board_id, current_workspace_id);
+            executor.execute_plan(&cyan_db, &plan)
+        })();
+
+        match result {
+            Ok(exec_result) => {
+                self.push_event(AIEvent::AgentExecuted {
+                    request_id,
+                    intent: exec_result.intent,
+                    affected_rows: exec_result.affected_rows,
+                    message: exec_result.message,
+                });
+            }
+            Err(e) => {
+                self.push_event(AIEvent::AgentError {
+                    request_id,
+                    step: "execution".to_string(),
+                    error: e.to_string(),
+                });
+            }
+        }
+    }
+
+    fn build_sql_prompt(&self, query: &str, bullets: &[Bullet]) -> String {
+        let mut prompt = String::new();
+
+        prompt.push_str("<|system|>\n");
+        prompt.push_str("You are CyanLens, an AI assistant for Cyan workspace. ");
+        prompt.push_str("Generate SQLite queries to search the workspace database.\n\n");
+        prompt.push_str("Tables: groups, workspaces, objects, notebook_cells\n");
+        prompt.push_str("Key: To find boards in a group, JOIN objects → workspaces → groups.\n");
+        prompt.push_str("<|end|>\n");
+
+        prompt.push_str("<|user|>\n");
+
+        // Add playbook bullets if any
+        if !bullets.is_empty() {
+            prompt.push_str("Learned patterns:\n");
+            for bullet in bullets {
+                prompt.push_str(&format!("- {}\n", bullet.content));
+            }
+            prompt.push('\n');
+        }
+
+        prompt.push_str(query);
+        prompt.push_str("\n<|end|>\n");
+        prompt.push_str("<|assistant|>\n");
+
+        prompt
     }
 
     fn handle_lens_feedback(
@@ -941,6 +1235,8 @@ pub extern "C" fn xaero_ai_lens_feedback(request_id: *const c_char, was_helpful:
     });
     true
 }
+
+
 
 #[cfg(test)]
 mod tests {

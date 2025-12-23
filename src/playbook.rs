@@ -478,6 +478,24 @@ pub fn list_all(db: &Connection, scope: &str) -> Result<Vec<Bullet>> {
     Ok(bullets)
 }
 
+/// List active bullets (score >= 0, used for prompt injection)
+pub fn list_active(db: &Connection, scope: &str) -> Result<Vec<Bullet>> {
+    let mut stmt = db.prepare(
+        "SELECT id, scope, section, content, helpful_count, harmful_count, neutral_count,
+                score, source_type, source_id, created_at, updated_at
+         FROM playbook_bullets
+         WHERE scope = ?1 AND score >= 0
+         ORDER BY score DESC
+         LIMIT 20"
+    )?;
+
+    let bullets = stmt.query_map(params![scope], row_to_bullet)?
+        .filter_map(|r| r.ok())
+        .collect();
+
+    Ok(bullets)
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlaybookStats {
     pub total_bullets: usize,
